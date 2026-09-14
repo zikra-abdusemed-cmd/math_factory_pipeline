@@ -1,0 +1,6 @@
+manim>=0.19
+manim-voiceover>=0.3.7
+google-genai>=1.0
+python-dotenv>=1.0
+requests>=2.31
+python-slugify>=8.0

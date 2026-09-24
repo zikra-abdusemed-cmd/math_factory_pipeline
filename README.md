@@ -4,32 +4,35 @@ Turn a title into a fully narrated math explainer video:
 
 ```
 title -> narration script -> Manim storyboard -> Manim scene code (per beat)
+      -> pre-generate TTS into a shared cache
       -> render each scene (audio + animation already synced/embedded)
       -> stitch into one final .mp4
 ```
 
-Gemini is used for **all** the text generation (script, storyboard, Manim
-code). For the **voice**, you can start with Gemini's own TTS (zero extra
-setup, good enough to sanity-check the whole pipeline) and switch to
-**OmniVoice** later by changing one line in `.env` — no code changes needed
-anywhere else.
+OpenAI is used for **all** text generation (script, storyboard, Manim code)
+with `gpt-5.6-terra`, and narration uses `gpt-4o-mini-tts`.
 
 ## How it fits together
 
-- **manim-voiceover** does the heavy lifting for audio/video sync: each
-  scene wraps its narration in `with self.voiceover(text=...) as tracker:`
-  and animates with `run_time=tracker.duration`, so the animation always
-  exactly fills the spoken audio. manim then embeds that audio directly into
-  the rendered `.mp4` — there's no separate "add audio" step, it's already
-  in the file coming out of each scene render.
+- **manim-voiceover** muxes narration into each scene. Generated scenes are
+  rewritten to subclass `SyncedVoiceoverScene`, which caps every `play`/`wait`
+  to the remaining spoken duration so animations cannot run past the voice.
+  Clips are then duration-normalized before concat so tiny frame-rounding
+  mismatches do not accumulate across beats.
+- **TTS is pre-generated**: before any final Manim render, the pipeline
+  synthesizes each unique narration once into `generated/_voiceover_cache/`.
+  Final renders hit that cache instead of calling the TTS API mid-render.
+  Re-running the same (or overlapping) narration text also reuses the cache.
+- **OpenAI WAV headers are patched**: OpenAI streams WAVs with RIFF size
+  `0xFFFFFFFF`, which made Manim treat ~15s of audio as ~25 hours. The pipeline
+  rewrites those headers and refuses any voiceover longer than a sane beat.
 - **Self-repair loop**: LLM-written Manim code is usually right, not always.
-  After generating a scene, the pipeline test-renders it at low quality; if
-  it errors, the traceback goes straight back to Gemini with a "fix this"
-  prompt (up to `MAX_CODEGEN_RETRIES` times) before moving on.
+  After generating a scene, the pipeline test-renders it at low quality with
+  silent offline audio; if it errors, the traceback goes straight back to the
+  model (up to `MAX_CODEGEN_RETRIES` times) before moving on.
 - **Voice provider is a single switch point**: every generated scene imports
-  `get_speech_service()` from `tts_services/active_service.py` instead of a
-  concrete provider. That function reads `VOICE_PROVIDER` from `.env` and
-  returns the right one. Regenerating scenes is never required to swap voices.
+  `get_speech_service()` from `tts_services/active_service.py`. That function
+  reads `VOICE_PROVIDER` from `.env` (`openai` or `offline`).
 
 ## Project layout
 
@@ -37,31 +40,32 @@ anywhere else.
 config.py                       All settings, read from .env
 main.py                         CLI entry point
 pipeline/
-  gemini_client.py              Thin wrapper around google-genai
+  openai_client.py              Thin wrapper around the OpenAI Responses API
   script_gen.py                 title -> narration script (beats)
   storyboard_gen.py             script -> Manim visual plan per beat
   scene_codegen.py              storyboard+narration -> Manim code, with self-repair
+  tts_pregen.py                 pre-warm shared TTS cache from scene narrations
   render.py                     runs `manim` to render each scene to .mp4
   concat.py                     stitches scene clips into the final video
   orchestrator.py               wires the above into one run
 tts_services/
   active_service.py             the single switch point (VOICE_PROVIDER)
-  gemini_tts_service.py         test voice: Gemini's native TTS
-  omnivoice_service.py          production voice: OmniVoice (see below)
+  openai_tts_service.py         narration: OpenAI gpt-4o-mini-tts
   offline_silent_service.py     free, no-API dry run of the mechanics
+webapp/                         local FastAPI UI
 generated/<title-slug>/         all output for one run (see below)
+generated/_voiceover_cache/     shared TTS wav + cache.json across runs
 ```
 
 After a run, `generated/<title-slug>/` contains:
 
 - `script.json`, `storyboard.json` — inspectable intermediate artifacts
 - `scenes/scene_<id>.py` — the actual generated Manim source, per beat
-- `media/` — manim's normal render output (frames, per-scene .mp4s, cached audio)
+- `media/` — manim's normal render output (frames, per-scene .mp4s)
 - `<title-slug>.mp4` — the final stitched video
 
-Nothing here is deleted between runs, so if step 5 (concat) fails for some
-reason, your rendered scene clips are still sitting in `media/` and you can
-concat them by hand or re-run.
+Nothing here is deleted between runs, so if concat fails for some reason,
+your rendered scene clips are still sitting in `media/`.
 
 ## Setup
 
@@ -92,9 +96,8 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Open `.env` and set `GEMINI_API_KEY` to a real key from
-[Google AI Studio](https://aistudio.google.com/). Leave `VOICE_PROVIDER=gemini`
-for now.
+Open `.env` and set `OPENAI_API_KEY` to a real OpenAI API key. Leave
+`VOICE_PROVIDER=openai` for production narration.
 
 ## Usage
 
@@ -108,6 +111,13 @@ Useful flags/env vars:
 # Faster, lower-quality draft while you're iterating on prompts
 python main.py "Why 0.999... equals 1" --quality ql
 
+# High-quality 1080p/60fps final export (substantially slower on CPU-only Macs)
+python main.py "Why 0.999... equals 1" --quality qh
+
+# Add a creative brief for the narration and visual style
+python main.py "Introduction to Sets" --quality qm \
+  --description "Use a friendly classroom example and explain Venn diagrams."
+
 # Sanity-check the mechanics (storyboard -> code -> render -> concat)
 # with zero API calls and silent placeholder audio
 VOICE_PROVIDER=offline python main.py "Test Topic" --quality ql
@@ -119,30 +129,26 @@ MAX_SCENES=4 python main.py "A Quick Fact About Primes"
 The final path is printed at the end, e.g.:
 `generated/the-pythagorean-theorem/the-pythagorean-theorem.mp4`
 
-A single run makes a handful of Gemini text calls (script, storyboard, one
+## Local web UI
+
+After completing setup, start the local interface with:
+
+```bash
+uvicorn webapp.server:app
+```
+
+Then open [http://127.0.0.1:8000](http://127.0.0.1:8000). The UI uses the
+same `.env` and configuration as the CLI, lets you pick render quality, permits
+one active generation at a time, and keeps the final video under
+`generated/<title-slug>/` as usual. Do not use `--reload` or multiple Uvicorn
+workers while generating a video — either would replace the in-memory job
+queue and make a still-running browser poll return 404.
+
+A single run makes a handful of OpenAI text calls (script, storyboard, one
 per scene for code — plus one more per retry if a scene needs fixing) and
-one Gemini TTS call per `self.voiceover(...)` block. For a 5-beat video
-with 2 voiceover blocks per beat, that's roughly 5-15 text calls and
-~10 TTS calls — keep an eye on your API usage/billing, especially at
-`--quality qh`/`qk` where each render also takes real render time.
-
-## Switching to OmniVoice
-
-`tts_services/omnivoice_service.py` has two backends already implemented —
-pick whichever matches what you actually have:
-
-- **`OMNIVOICE_BACKEND=openai_compatible`** — a self-hosted OmniVoice server
-  (e.g. the `omnivoice-server` PyPI package) exposing an OpenAI-compatible
-  `POST /v1/audio/speech`. Needs a GPU box; set `OMNIVOICE_BASE_URL` to it.
-- **`OMNIVOICE_BACKEND=wavespeed`** — the hosted WaveSpeed OmniVoice REST API
-  (submit-a-task-then-poll flow). Just needs `OMNIVOICE_API_KEY`, no GPU.
-
-Whichever you use, set `VOICE_PROVIDER=omnivoice` in `.env` and everything
-downstream picks it up automatically. **This half was written against the
-public docs for each backend but not run against a live OmniVoice endpoint**
-(no credentials were available while building this) — double-check the
-request/response field names against your actual deployment and adjust
-`_call_openai_compatible` / `_call_wavespeed` if it doesn't match exactly.
+**one OpenAI TTS call per unique narration string** (cached thereafter). Keep
+an eye on billing at `--quality qh`/`qk` where each render also takes real
+render time.
 
 ## Troubleshooting
 
@@ -158,20 +164,40 @@ request/response field names against your actual deployment and adjust
   re-encoding concat automatically, so if both attempts fail check
   `generated/<slug>/media/videos/*/**.mp4` play individually to isolate
   which clip is corrupt.
-- **Gemini model name errors (404 / not found)** → Google renames/retires
-  preview model strings periodically; check the current names at
-  https://ai.google.dev/gemini-api/docs/models and update `GEMINI_TEXT_MODEL`
-  / `GEMINI_TTS_MODEL` in `.env`.
-- **Gemini `503 UNAVAILABLE` / “high demand”** → this is a temporary service
-  capacity error, not a bad prompt or API key. The pipeline retries transient
-  `429`/`5xx` responses with exponential backoff and jitter; tune
-  `GEMINI_RETRY_ATTEMPTS`, `GEMINI_RETRY_BASE_DELAY_SECONDS`, and
-  `GEMINI_RETRY_MAX_DELAY_SECONDS` in `.env` if needed. If it still exhausts
-  retries, wait and rerun, or switch `GEMINI_TEXT_MODEL` from the preview
-  model to a currently supported stable Flash model shown in Gemini's model
-  list.
-- **Gemini TTS `429 RESOURCE_EXHAUSTED` with `GenerateRequestsPerDay`** → the
-  free-tier daily request quota for the TTS model is spent. Retrying cannot
-  fix this: wait for its reset, enable billing/use a model with available
-  quota, or set `VOICE_PROVIDER=offline` to render a silent video while you
-  validate the animation pipeline.
+- **OpenAI `429` or `5xx` response** → this is commonly a temporary rate or
+  capacity issue. The pipeline retries with exponential backoff and jitter;
+  tune `OPENAI_RETRY_ATTEMPTS`, `OPENAI_RETRY_BASE_DELAY_SECONDS`, and
+  `OPENAI_RETRY_MAX_DELAY_SECONDS` in `.env` if needed.
+- **OpenAI model name error (404 / not found)** → confirm your project can
+  access `gpt-5.6-terra` and `gpt-4o-mini-tts`, then check the values in
+  `OPENAI_TEXT_MODEL` and `OPENAI_TTS_MODEL`.
+- **TTS still seems slow during render** → check that
+  `generated/_voiceover_cache/cache.json` contains entries for your narration;
+  the pre-generate step should print one line per unique string before rendering.
+- **A single draft scene takes tens of minutes / hours** → almost always a
+  corrupt streaming WAV (`RIFF` size `0xFFFFFFFF`). Delete
+  `generated/_voiceover_cache/` and re-run, or let the next pre-generate step
+  scrub/repair it automatically. Confirm each pre-generate line prints a
+  sane duration like `-> 17.2s`.
+# System dependency for mathematical rendering
+
+Generated scenes use Manim `MathTex` for notation via `pipeline/math_rendering.py`.
+You need a working LaTeX toolchain with `latex` and `dvisvgm` on `PATH`
+(BasicTeX or MacTeX on macOS; TeX Live + dvisvgm on Linux).
+
+The pipeline does **not** require the `standalone` LaTeX package: it installs a
+custom TeX template based on `article` + `amsmath`/`amssymb`, which BasicTeX
+already includes. A smoke-test runs before codegen; if MathTex cannot compile,
+generation stops with a clear error instead of showing raw LaTeX through `Text`.
+
+On macOS, ensure TeX binaries are visible:
+
+```bash
+export PATH="/Library/TeX/texbin:$PATH"
+```
+
+Optional (only if you want Manim's default standalone template elsewhere):
+
+```bash
+sudo tlmgr install standalone preview
+```

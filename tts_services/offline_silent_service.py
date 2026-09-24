@@ -2,7 +2,7 @@
 A zero-dependency, zero-network SpeechService that generates silence sized
 to roughly how long the text would take to speak. Useful for dry-running
 the whole mechanical pipeline (storyboard -> Manim code -> render -> concat)
-without burning Gemini/OmniVoice calls, and for CI. Select it with
+without burning OpenAI TTS calls, and for CI. Select it with
 VOICE_PROVIDER=offline.
 """
 

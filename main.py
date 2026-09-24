@@ -3,10 +3,10 @@
 Usage:
     python main.py "The Pythagorean Theorem"
     python main.py "Why 0.999... equals 1" --quality qm
-    VOICE_PROVIDER=omnivoice python main.py "Intro to Derivatives"
+    python main.py "Introduction to Sets" --description "Use a friendly classroom example."
 
 Takes a video title, generates a narration script + Manim storyboard with
-Gemini, generates + renders a Manim scene per beat (with narration synced
+OpenAI, generates + renders a Manim scene per beat (with narration synced
 in automatically via manim-voiceover), and stitches everything into one
 final .mp4 with audio already embedded.
 """
@@ -24,12 +24,23 @@ def main() -> None:
     parser.add_argument("title", help="The video's title / topic, e.g. \"The Pythagorean Theorem\"")
     parser.add_argument(
         "--quality", choices=["ql", "qm", "qh", "qk"], default=None,
-        help="Render quality (default: from RENDER_QUALITY env var, or qh).",
+        help="Render quality (default: from RENDER_QUALITY env var, or ql).",
+    )
+    parser.add_argument(
+        "--description",
+        "--prompt",
+        dest="description",
+        default=None,
+        help="Optional creative direction for the narration and visuals.",
     )
     args = parser.parse_args()
 
     try:
-        final_path = run_pipeline(args.title, quality=args.quality)
+        final_path = run_pipeline(
+            args.title,
+            quality=args.quality,
+            extra_instructions=args.description,
+        )
     except Exception as e:  # noqa: BLE001 - top-level CLI error boundary
         print(f"\nPipeline failed: {e}", file=sys.stderr)
         sys.exit(1)

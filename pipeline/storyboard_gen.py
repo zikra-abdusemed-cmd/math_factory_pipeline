@@ -1,7 +1,7 @@
 """
 Step 2: script -> Manim storyboard.
 
-For each narration beat we ask Gemini for a concrete visual plan: what
+For each narration beat we ask OpenAI for a concrete visual plan: what
 objects appear, what happens to them, and roughly how that maps onto the
 sentences being spoken. This storyboard is what the code-generation step
 (pipeline/scene_codegen.py) turns into an actual Manim scene, so it's kept
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from pipeline.gemini_client import generate_json
+from pipeline.openai_client import generate_json
 from pipeline.script_gen import Script
 
 STORYBOARD_SYSTEM_PROMPT = """You are a Manim (Community Edition) storyboard \
@@ -84,7 +84,7 @@ def generate_storyboard(script: Script) -> list[StoryboardScene]:
     ]
 
     # Defensive: make sure ids line up 1:1 with the script beats, and that
-    # class names are unique (Gemini occasionally repeats a name).
+    # class names are unique (models occasionally repeat a name).
     by_id = {s.id: s for s in scenes}
     missing = [b.id for b in script.beats if b.id not in by_id]
     if missing:

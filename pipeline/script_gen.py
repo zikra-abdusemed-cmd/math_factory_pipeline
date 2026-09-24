@@ -1,12 +1,12 @@
 """
 Step 1: title -> narration script.
 
-The script is what gets sent to the voice engine (Gemini TTS today,
-OmniVoice later). It's split into "beats": short narration chunks
-(~20-30 seconds of spoken audio each) that each become one Manim scene.
-Keeping beats short is what makes the audio/animation sync in
-manim-voiceover work well -- a scene that only has to illustrate one
-idea is much easier to storyboard and code-generate correctly.
+The script is what gets sent to OpenAI TTS (or silent offline audio).
+It's split into "beats": short narration chunks (~20-30 seconds of spoken
+audio each) that each become one Manim scene. Keeping beats short is what
+makes the audio/animation sync in manim-voiceover work well -- a scene that
+only has to illustrate one idea is much easier to storyboard and
+code-generate correctly.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import config
-from pipeline.gemini_client import generate_json
+from pipeline.openai_client import generate_json
 
 SCRIPT_SYSTEM_PROMPT = """You are an expert math educator and scriptwriter, \
 in the style of 3Blue1Brown / Numberphile. You write narration scripts meant \
@@ -68,7 +68,7 @@ class Script:
     beats: list[ScriptBeat]
 
 
-def generate_script(title: str) -> Script:
+def generate_script(title: str, extra_instructions: str | None = None) -> Script:
     words_per_second = 2.5  # ~150 wpm conversational pace
     target_seconds = config.pipeline.target_seconds_per_beat
     min_words = int(target_seconds * words_per_second * 0.7)
@@ -78,6 +78,12 @@ def generate_script(title: str) -> Script:
         target_seconds=int(target_seconds), min_words=min_words, max_words=max_words
     )
     user_prompt = SCRIPT_USER_PROMPT.format(title=title, max_scenes=config.pipeline.max_scenes)
+    if extra_instructions and extra_instructions.strip():
+        user_prompt += (
+            "\nThe user also asked for the following additional creative direction: "
+            f"{extra_instructions.strip()}\n"
+            "Honor it while preserving the required JSON response format.\n"
+        )
 
     data = generate_json(user_prompt, system_instruction=system_prompt, temperature=0.8)
 

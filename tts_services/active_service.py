@@ -1,30 +1,43 @@
 """
 Every generated Manim scene imports get_speech_service() from here instead
-of importing a concrete provider directly. That's the whole trick for
-"use Gemini now, swap to OmniVoice later": change VOICE_PROVIDER in .env
-and every already-generated scene picks up the new provider automatically,
-no regeneration or code edits needed.
+of importing a concrete provider directly. Change VOICE_PROVIDER in .env
+and every already-generated scene picks up the new provider automatically.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 from manim_voiceover.services.base import SpeechService
 
 import config
 
 
-def get_speech_service() -> SpeechService:
+def voiceover_cache_dir() -> Path:
+    """
+    Shared TTS cache so narrations are synthesized once across runs/renders.
+
+    Offline validation uses a separate directory so silent placeholders never
+    mix with real OpenAI WAVs in the production cache.
+    """
+    if config.pipeline.voice_provider == "offline":
+        path = config.GENERATED_DIR / "_voiceover_cache_offline"
+    else:
+        path = config.GENERATED_DIR / "_voiceover_cache"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def get_speech_service(cache_dir: Path | None = None) -> SpeechService:
     provider = config.pipeline.voice_provider
-    if provider == "gemini":
-        from tts_services.gemini_tts_service import GeminiTTSService
+    kwargs: dict[str, object] = {"cache_dir": cache_dir or voiceover_cache_dir()}
 
-        return GeminiTTSService()
-    if provider == "omnivoice":
-        from tts_services.omnivoice_service import OmniVoiceService
+    if provider == "openai":
+        from tts_services.openai_tts_service import OpenAITTSService
 
-        return OmniVoiceService()
+        return OpenAITTSService(**kwargs)
     if provider == "offline":
         from tts_services.offline_silent_service import OfflineSilentService
 
-        return OfflineSilentService()
-    raise ValueError(f"Unknown VOICE_PROVIDER: {provider!r} (expected 'gemini', 'omnivoice', or 'offline')")
+        return OfflineSilentService(**kwargs)
+    raise ValueError(f"Unknown VOICE_PROVIDER: {provider!r} (expected 'openai' or 'offline')")

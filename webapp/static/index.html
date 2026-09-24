@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Figure — Math Video Pipeline</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,500;6..72,600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <div class="backdrop" aria-hidden="true"></div>
+    <main class="shell">
+      <header class="brand">
+        <p class="brand-mark">Figure</p>
+        <p class="brand-tag">Narrated Manim explainers from a title.</p>
+      </header>
+
+      <form id="generate-form" class="compose" aria-labelledby="compose-title">
+        <h1 id="compose-title" class="visually-hidden">Generate a math video</h1>
+
+        <label for="title">Title</label>
+        <input id="title" name="title" maxlength="160" required placeholder="e.g. Why does 0.999… equal 1?" autocomplete="off">
+
+        <label for="prompt">Creative brief <span class="optional">optional</span></label>
+        <textarea id="prompt" name="prompt" maxlength="2000" placeholder="Audience, metaphor, or anything you want covered…"></textarea>
+
+        <fieldset class="quality">
+          <legend>Render quality</legend>
+          <div id="quality-options" class="quality-options" role="radiogroup" aria-label="Render quality"></div>
+        </fieldset>
+
+        <div class="actions">
+          <button id="generate-button" type="submit">Generate video</button>
+          <p id="config-hint" class="hint"></p>
+        </div>
+      </form>
+
+      <section id="status-panel" class="status" hidden aria-live="polite">
+        <div class="status-head">
+          <p id="status-text">Preparing your video…</p>
+          <p id="elapsed" class="elapsed">0:00</p>
+        </div>
+        <div class="progress-track" aria-hidden="true"><div id="progress-bar" class="progress-bar"></div></div>
+        <ol id="stage-list" class="stage-list"></ol>
+        <p id="status-detail" class="detail"></p>
+      </section>
+
+      <section id="result-panel" class="result" hidden>
+        <p class="success">Your video is ready.</p>
+        <video id="video" controls playsinline></video>
+        <div class="result-actions">
+          <a id="download-link" class="download" download>Download MP4</a>
+          <button id="new-button" type="button" class="ghost">Make another</button>
+        </div>
+      </section>
+
+      <section id="error-panel" class="error-box" hidden role="alert">
+        <p id="error-text">Something went wrong.</p>
+        <button id="retry-button" type="button" class="ghost">Try again</button>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

@@ -9,6 +9,7 @@ import os
 import subprocess
 from pathlib import Path
 
+import config
 from pipeline.scene_codegen import GeneratedScene
 
 QUALITY_FLAGS = {
@@ -18,6 +19,22 @@ QUALITY_FLAGS = {
     "qk": "-qk",
 }
 
+# Soft per-scene ceilings. A healthy ql beat should finish in a few minutes;
+# if Manim is still going after these limits, something pathological slipped
+# through (historically: corrupt streaming WAV headers → multi-hour scenes).
+QUALITY_TIMEOUT_SECONDS = {
+    "ql": 900,   # 15 min
+    "qm": 1800,  # 30 min
+    "qh": 3600,  # 60 min
+    "qk": 7200,  # 120 min
+}
+
+
+def _scene_timeout_seconds(quality: str) -> int:
+    configured = config.pipeline.render_timeout_seconds
+    soft = QUALITY_TIMEOUT_SECONDS.get(quality, configured)
+    return min(configured, soft)
+
 
 def render_scene(scene: GeneratedScene, media_dir: Path, project_root: Path, quality: str) -> Path:
     """Renders one scene and returns the path to its output .mp4."""
@@ -25,6 +42,7 @@ def render_scene(scene: GeneratedScene, media_dir: Path, project_root: Path, qua
         raise ValueError(f"Unknown quality {quality!r}, expected one of {list(QUALITY_FLAGS)}")
 
     media_dir.mkdir(parents=True, exist_ok=True)
+    timeout = _scene_timeout_seconds(quality)
     cmd = [
         "manim",
         QUALITY_FLAGS[quality],
@@ -35,7 +53,27 @@ def render_scene(scene: GeneratedScene, media_dir: Path, project_root: Path, qua
         scene.class_name,
     ]
     env = {**os.environ, "PYTHONPATH": str(project_root) + os.pathsep + os.environ.get("PYTHONPATH", "")}
-    result = subprocess.run(cmd, cwd=str(project_root), capture_output=True, text=True, timeout=900, env=env)
+    # Manim MathTex needs latex/dvisvgm; GUI-launched servers often lack TeX PATH.
+    from pipeline.math_rendering import ensure_tex_bin_on_path
+
+    ensure_tex_bin_on_path()
+    env["PATH"] = os.environ.get("PATH", "")
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"Final render timed out after {timeout} seconds for "
+            f"{scene.class_name} at quality={quality}. A healthy draft scene should finish "
+            "well under this. Check generated/_voiceover_cache for corrupt WAVs, or use "
+            "--quality ql. Increase RENDER_TIMEOUT_SECONDS only if you intentionally need longer."
+        ) from exc
     if result.returncode != 0:
         raise RuntimeError(
             f"Final render failed for {scene.class_name}:\n{result.stdout[-3000:]}\n{result.stderr[-3000:]}"

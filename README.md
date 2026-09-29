@@ -69,35 +69,169 @@ your rendered scene clips are still sitting in `media/`.
 
 ## Setup
 
-**1. System dependencies** (Manim needs these to render at all):
+Setup is the same five steps on every OS; only the commands differ.
+
+| | macOS | Linux (Ubuntu/Debian) | Windows 10/11 |
+|---|---|---|---|
+| Package manager | [Homebrew](https://brew.sh) | `apt` | `winget` (built in) |
+| Cairo / Pango | Homebrew | `apt` dev packages | bundled in pip wheels |
+| ffmpeg | Homebrew | `apt` | `winget` |
+| LaTeX | BasicTeX or MacTeX | TeX Live + dvisvgm | MiKTeX |
+| Shell in examples | Terminal (zsh/bash) | bash | PowerShell |
+
+Python 3.10–3.12 is the safest choice. Manim's compiled dependencies
+(`pycairo`, `manimpango`) can lag behind brand-new Python releases; if
+`pip install` fails with a build error on a newer Python, recreate the venv
+with 3.12.
+
+### 1. System dependencies
+
+Manim needs Cairo (drawing) and Pango (text layout). The pipeline calls the
+`ffmpeg` executable directly to normalize and stitch clips, so it must be on
+`PATH`.
+
+**macOS**
 
 ```bash
-# Ubuntu/Debian
-sudo apt-get install -y libcairo2-dev libpango1.0-dev ffmpeg pkg-config python3-dev
-
-# macOS
-brew install cairo pango ffmpeg
+brew install cairo pango pkg-config ffmpeg
 ```
 
-SoX is optional (only used if you ever set a non-1.0 `global_speed` on a
-voice); safe to skip.
-
-**2. Python environment**
+**Linux (Ubuntu/Debian)**
 
 ```bash
+sudo apt-get update
+sudo apt-get install -y build-essential python3-dev python3-venv pkg-config \
+  libcairo2-dev libpango1.0-dev ffmpeg
+```
+
+On Fedora: `sudo dnf install cairo-devel pango-devel python3-devel pkgconf ffmpeg`
+(ffmpeg comes from RPM Fusion).
+
+**Windows (PowerShell)**
+
+```powershell
+winget install --id Python.Python.3.12 -e
+winget install --id Gyan.FFmpeg -e
+```
+
+Cairo and Pango ship inside the Windows `pycairo`/`manimpango` wheels, so no
+separate install is needed. Close and reopen PowerShell after installing so
+the new `PATH` entries are picked up.
+
+SoX is optional on every OS (only used if you set a non-1.0 `global_speed` on
+a voice); safe to skip.
+
+Check: `ffmpeg -version` should print a version on all three systems.
+
+### 2. LaTeX (for on-screen math)
+
+Generated scenes render notation with Manim `MathTex` via
+`pipeline/math_rendering.py`, which needs `latex` and `dvisvgm` on `PATH`.
+
+The pipeline does **not** require the `standalone` LaTeX package: it installs
+a custom TeX template based on `article` + `amsmath`/`amssymb`, which even
+minimal distributions include. A smoke test runs before codegen; if MathTex
+cannot compile, generation stops with a clear error instead of showing raw
+LaTeX through `Text`.
+
+**macOS** — BasicTeX (~100 MB) is enough; MacTeX (~5 GB) also works:
+
+```bash
+brew install --cask basictex
+echo 'export PATH="/Library/TeX/texbin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+(The pipeline also adds `/Library/TeX/texbin` to `PATH` itself when it can't
+find `latex`, which helps when the web UI is launched from a GUI app.)
+
+**Linux**
+
+```bash
+sudo apt-get install -y texlive texlive-latex-extra dvisvgm
+```
+
+**Windows** — install MiKTeX, which includes `dvisvgm`:
+
+```powershell
+winget install --id MiKTeX.MiKTeX -e
+```
+
+Then open **MiKTeX Console → Settings** and set *"Install missing packages
+on-the-fly"* to **Always**. Otherwise a render can hang on a hidden
+"install package?" prompt. Reopen PowerShell afterwards.
+
+Check (all OSes):
+
+```bash
+latex --version
+dvisvgm --version
+```
+
+Optional (only if you want Manim's default `standalone` template elsewhere):
+`sudo tlmgr install standalone preview` on macOS/Linux, or install
+`standalone` and `preview` from MiKTeX Console on Windows.
+
+### 3. Python environment
+
+**macOS / Linux**
+
+```bash
+cd math_video_pipeline
 python3 -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
+source venv/bin/activate
+pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-**3. Configure**
+**Windows (PowerShell)**
+
+```powershell
+cd math_video_pipeline
+py -3.12 -m venv venv
+venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+If PowerShell refuses to run `Activate.ps1`, allow local scripts once with
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`. In `cmd.exe`, activate
+with `venv\Scripts\activate.bat` instead.
+
+Activate the venv in **every new terminal** before running the pipeline; your
+prompt shows `(venv)` when it is active. The pipeline launches `manim` as a
+subprocess, so it must be found through the active venv.
+
+`requirements.txt` installs `manim`, `manim-voiceover`, `openai`,
+`python-dotenv`, `python-slugify`, `fastapi`, and `uvicorn`.
+
+### 4. Configure
 
 ```bash
-cp .env.example .env
+cp .env.example .env            # macOS / Linux
+```
+
+```powershell
+Copy-Item .env.example .env     # Windows
 ```
 
 Open `.env` and set `OPENAI_API_KEY` to a real OpenAI API key. Leave
-`VOICE_PROVIDER=openai` for production narration.
+`VOICE_PROVIDER=openai` for production narration. `.env` is gitignored; never
+commit it. Every other setting (`RENDER_QUALITY`, `MAX_SCENES`,
+`MAX_CODEGEN_RETRIES`, `TARGET_SECONDS_PER_BEAT`, retry/timeouts) is
+documented inline in `.env.example`.
+
+### 5. Verify
+
+Cheapest check first:
+
+```bash
+# Cairo + Pango + LaTeX: renders sample equations, no API calls
+manim -ql tests/manim_math_validation.py UniversalMathValidation
+```
+
+If that produces a video under `media/`, the rendering stack works. Then try
+an offline-voice run (see Usage below), then a real run.
 
 ## Usage
 
@@ -105,25 +239,39 @@ Open `.env` and set `OPENAI_API_KEY` to a real OpenAI API key. Leave
 python main.py "The Pythagorean Theorem"
 ```
 
-Useful flags/env vars:
+Useful flags:
 
 ```bash
 # Faster, lower-quality draft while you're iterating on prompts
 python main.py "Why 0.999... equals 1" --quality ql
 
-# High-quality 1080p/60fps final export (substantially slower on CPU-only Macs)
+# High-quality 1080p/60fps final export (substantially slower on CPU-only machines)
 python main.py "Why 0.999... equals 1" --quality qh
 
 # Add a creative brief for the narration and visual style
-python main.py "Introduction to Sets" --quality qm \
-  --description "Use a friendly classroom example and explain Venn diagrams."
+python main.py "Introduction to Sets" --quality qm --description "Use a friendly classroom example and explain Venn diagrams."
+```
 
-# Sanity-check the mechanics (storyboard -> code -> render -> concat)
-# with zero API calls and silent placeholder audio
+Any `.env` setting can be overridden for a single run. The syntax differs by
+shell:
+
+```bash
+# macOS / Linux
+# Sanity-check the mechanics with silent placeholder audio (no TTS calls;
+# script/storyboard/code generation still use the OpenAI text model)
 VOICE_PROVIDER=offline python main.py "Test Topic" --quality ql
 
 # Cap how many scenes/beats a video is allowed to have
 MAX_SCENES=4 python main.py "A Quick Fact About Primes"
+```
+
+```powershell
+# Windows (PowerShell) - the variable stays set for the rest of the session
+$env:VOICE_PROVIDER = "offline"; python main.py "Test Topic" --quality ql
+Remove-Item Env:VOICE_PROVIDER
+
+$env:MAX_SCENES = "4"; python main.py "A Quick Fact About Primes"
+Remove-Item Env:MAX_SCENES
 ```
 
 The final path is printed at the end, e.g.:
@@ -152,8 +300,19 @@ render time.
 
 ## Troubleshooting
 
-- **"pangocairo not found" during `pip install`** → you skipped the system
-  dependencies step above; install `libcairo2-dev`/`libpango1.0-dev` first.
+- **"pangocairo not found" / `pycairo` build error during `pip install`** →
+  on macOS/Linux the system dependencies (step 1) are missing; install
+  Cairo, Pango, and `pkg-config` first. On Windows this usually means no
+  prebuilt wheel exists for your Python version; recreate the venv with
+  Python 3.12.
+- **`ffmpeg was not found`, or `latex`/`dvisvgm` not found** → the tool is
+  installed but not on `PATH` in this terminal. Reopen the terminal (Windows)
+  or re-source your shell profile (macOS/Linux), then re-check with
+  `ffmpeg -version` / `latex --version`.
+- **`manim` is not recognized** → the venv is not activated in this terminal.
+- **Windows: a render hangs at the first equation** → MiKTeX is waiting on a
+  hidden "install missing package?" prompt. Set on-the-fly installs to
+  *Always* in MiKTeX Console.
 - **A scene keeps failing all `MAX_CODEGEN_RETRIES` attempts** → open
   `generated/<slug>/scenes/scene_<id>.py` and look at the last error printed;
   the storyboard step occasionally asks for something too elaborate for one
@@ -179,25 +338,3 @@ render time.
   `generated/_voiceover_cache/` and re-run, or let the next pre-generate step
   scrub/repair it automatically. Confirm each pre-generate line prints a
   sane duration like `-> 17.2s`.
-# System dependency for mathematical rendering
-
-Generated scenes use Manim `MathTex` for notation via `pipeline/math_rendering.py`.
-You need a working LaTeX toolchain with `latex` and `dvisvgm` on `PATH`
-(BasicTeX or MacTeX on macOS; TeX Live + dvisvgm on Linux).
-
-The pipeline does **not** require the `standalone` LaTeX package: it installs a
-custom TeX template based on `article` + `amsmath`/`amssymb`, which BasicTeX
-already includes. A smoke-test runs before codegen; if MathTex cannot compile,
-generation stops with a clear error instead of showing raw LaTeX through `Text`.
-
-On macOS, ensure TeX binaries are visible:
-
-```bash
-export PATH="/Library/TeX/texbin:$PATH"
-```
-
-Optional (only if you want Manim's default standalone template elsewhere):
-
-```bash
-sudo tlmgr install standalone preview
-```

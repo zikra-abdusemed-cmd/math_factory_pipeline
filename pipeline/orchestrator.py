@@ -20,9 +20,10 @@ from slugify import slugify
 import config
 from pipeline.render import render_scene
 from pipeline.concat import concat_videos
-from pipeline.scene_codegen import generate_scene_code
-from pipeline.script_gen import generate_script
-from pipeline.storyboard_gen import generate_storyboard
+from pipeline.scene_codegen import GeneratedScene, normalize_visible_content, _strip_code_fences, _try_render
+from pipeline.script_gen import Script, ScriptBeat
+from pipeline.storyboard_gen import StoryboardScene
+from pipeline.openai_client import generate_video_package
 from pipeline.tts_pregen import assert_cached_voiceovers_sane, collect_voiceover_texts, pregenerate_voiceovers
 
 
@@ -46,18 +47,36 @@ def run_pipeline(
     scenes_dir = run_dir / "scenes"
     media_dir = run_dir / "media"
 
-    print(f"[1/6] Generating narration script for: {title!r}")
+    print(f"[1/4] Generating complete video package in one text API call: {title!r}")
     report("generating_script", title=title)
-    script = generate_script(title, extra_instructions=extra_instructions)
+    package = generate_video_package(title, extra_instructions=extra_instructions)
+    script = Script(
+        title=package.get("title", title),
+        audience=package.get("audience", ""),
+        beats=[ScriptBeat(id=b["id"], beat_title=b.get("beat_title", b["id"]), narration=b["narration"].strip()) for b in package["beats"]],
+    )
+    raw_scenes = package["scenes"]
+    scenes_by_id = {s["id"]: s for s in raw_scenes}
+    if len(scenes_by_id) != len(script.beats) or any(b.id not in scenes_by_id for b in script.beats):
+        raise ValueError("Single-call package must contain exactly one scene for every narration beat.")
+    storyboard = [
+        StoryboardScene(
+            id=b.id,
+            class_name=scenes_by_id[b.id]["class_name"],
+            visual_summary=scenes_by_id[b.id].get("visual_summary", ""),
+            steps=list(scenes_by_id[b.id].get("steps", [])),
+            on_screen_text=list(scenes_by_id[b.id].get("on_screen_text", [])),
+        )
+        for b in script.beats
+    ]
     (run_dir / "script.json").write_text(
         json.dumps(dataclasses.asdict(script), indent=2), encoding="utf-8"
     )
     print(f"      -> {len(script.beats)} beats")
     report("script_generated", scene_total=len(script.beats))
 
-    print("[2/6] Generating Manim storyboard")
+    print("[2/4] Saving storyboard and scene files from package")
     report("generating_storyboard", scene_total=len(script.beats))
-    storyboard = generate_storyboard(script)
     (run_dir / "storyboard.json").write_text(
         json.dumps([dataclasses.asdict(s) for s in storyboard], indent=2), encoding="utf-8"
     )
@@ -66,21 +85,26 @@ def run_pipeline(
     beats_by_id = {b.id: b for b in script.beats}
     generated_scenes = []
 
+    scenes_dir.mkdir(parents=True, exist_ok=True)
     for i, scene_plan in enumerate(storyboard, start=1):
-        beat = beats_by_id[scene_plan.id]
-        print(f"[3/6] ({i}/{len(storyboard)}) Generating + validating Manim code for '{scene_plan.class_name}'")
+        print(f"[2/4] ({i}/{len(storyboard)}) Validating generated scene '{scene_plan.class_name}'")
         report(
             "generating_scene_code",
             scene_index=i,
             scene_total=len(storyboard),
             class_name=scene_plan.class_name,
         )
-        generated = generate_scene_code(
-            beat=beat,
-            storyboard=scene_plan,
-            scenes_dir=scenes_dir,
-            project_root=config.PROJECT_ROOT,
-        )
+        code = normalize_visible_content(_strip_code_fences(scenes_by_id[scene_plan.id]["code"]))
+        module_stem = f"scene_{scene_plan.id}"
+        file_path = scenes_dir / f"{module_stem}.py"
+        file_path.write_text(code, encoding="utf-8")
+        ok, error = _try_render(file_path, scene_plan.class_name, config.PROJECT_ROOT)
+        if not ok:
+            raise RuntimeError(
+                f"Single-call generated scene {scene_plan.class_name} failed local validation. "
+                f"No repair API call was made, to preserve the one-call limit.\n{error}"
+            )
+        generated = GeneratedScene(class_name=scene_plan.class_name, file_path=file_path, module_stem=module_stem)
         generated_scenes.append(generated)
         report(
             "scene_code_generated",
@@ -89,7 +113,7 @@ def run_pipeline(
             class_name=generated.class_name,
         )
 
-    print("[4/6] Pre-generating narration audio (shared TTS cache)")
+    print("[3/4] Pre-generating narration audio (separate TTS API; shared cache)")
     report("pregenerating_voiceovers", scene_total=len(generated_scenes))
     voice_texts = collect_voiceover_texts(
         [scene.file_path for scene in generated_scenes],
@@ -102,7 +126,7 @@ def run_pipeline(
 
     clip_paths: list[Path] = []
     for i, generated in enumerate(generated_scenes, start=1):
-        print(f"[5/6] ({i}/{len(generated_scenes)}) Rendering '{generated.class_name}' at quality={quality}")
+        print(f"[3/4] ({i}/{len(generated_scenes)}) Rendering '{generated.class_name}' at quality={quality}")
         report(
             "rendering_scene",
             scene_index=i,
@@ -124,7 +148,7 @@ def run_pipeline(
             class_name=generated.class_name,
         )
 
-    print(f"[6/6] Stitching {len(clip_paths)} clips into the final video")
+    print(f"[4/4] Stitching {len(clip_paths)} clips into the final video")
     report("stitching", scene_total=len(clip_paths))
     output_path = run_dir / f"{slug}.mp4"
     final_path = concat_videos(clip_paths, output_path=output_path, tmp_dir=run_dir / "_concat_tmp")

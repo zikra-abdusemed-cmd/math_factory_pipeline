@@ -9,8 +9,9 @@ title -> narration script -> Manim storyboard -> Manim scene code (per beat)
       -> stitch into one final .mp4
 ```
 
-OpenAI is used for **all** text generation (script, storyboard, Manim code)
-with `gpt-5.6-terra`, and narration uses `gpt-4o-mini-tts`.
+OpenAI is used for **one text-generation request per video** (script,
+storyboard, and all Manim scene code together) with `gpt-5.6-terra`, and
+narration uses `gpt-4o-mini-tts` in separate, cacheable audio requests.
 
 ## How it fits together
 
@@ -26,10 +27,9 @@ with `gpt-5.6-terra`, and narration uses `gpt-4o-mini-tts`.
 - **OpenAI WAV headers are patched**: OpenAI streams WAVs with RIFF size
   `0xFFFFFFFF`, which made Manim treat ~15s of audio as ~25 hours. The pipeline
   rewrites those headers and refuses any voiceover longer than a sane beat.
-- **Self-repair loop**: LLM-written Manim code is usually right, not always.
-  After generating a scene, the pipeline test-renders it at low quality with
-  silent offline audio; if it errors, the traceback goes straight back to the
-  model (up to `MAX_CODEGEN_RETRIES` times) before moving on.
+- **Local scene validation**: all generated scenes are test-rendered at low
+  quality with silent offline audio. A validation error stops the run with
+  its traceback. Repairing it and rerunning requires a new text API request.
 - **Voice provider is a single switch point**: every generated scene imports
   `get_speech_service()` from `tts_services/active_service.py`. That function
   reads `VOICE_PROVIDER` from `.env` (`openai` or `offline`).
@@ -43,7 +43,7 @@ pipeline/
   openai_client.py              Thin wrapper around the OpenAI Responses API
   script_gen.py                 title -> narration script (beats)
   storyboard_gen.py             script -> Manim visual plan per beat
-  scene_codegen.py              storyboard+narration -> Manim code, with self-repair
+  scene_codegen.py              generated scene normalization and validation
   tts_pregen.py                 pre-warm shared TTS cache from scene narrations
   render.py                     runs `manim` to render each scene to .mp4
   concat.py                     stitches scene clips into the final video
@@ -218,7 +218,7 @@ Copy-Item .env.example .env     # Windows
 Open `.env` and set `OPENAI_API_KEY` to a real OpenAI API key. Leave
 `VOICE_PROVIDER=openai` for production narration. `.env` is gitignored; never
 commit it. Every other setting (`RENDER_QUALITY`, `MAX_SCENES`,
-`MAX_CODEGEN_RETRIES`, `TARGET_SECONDS_PER_BEAT`, retry/timeouts) is
+`MAX_CODEGEN_RETRIES` (legacy), `TARGET_SECONDS_PER_BEAT`, retry/timeouts) is
 documented inline in `.env.example`.
 
 ### 5. Verify
@@ -292,8 +292,7 @@ one active generation at a time, and keeps the final video under
 workers while generating a video — either would replace the in-memory job
 queue and make a still-running browser poll return 404.
 
-A single run makes a handful of OpenAI text calls (script, storyboard, one
-per scene for code — plus one more per retry if a scene needs fixing) and
+A single run makes **one OpenAI text call** for the entire video and
 **one OpenAI TTS call per unique narration string** (cached thereafter). Keep
 an eye on billing at `--quality qh`/`qk` where each render also takes real
 render time.

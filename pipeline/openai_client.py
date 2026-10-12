@@ -63,6 +63,52 @@ def generate_json(prompt: str, system_instruction: str | None = None, temperatur
     return _parse_json_loose(response.output_text or "")
 
 
+def generate_video_package(title: str, extra_instructions: str | None = None) -> Any:
+    """Generate narration, storyboard, and all scene sources in one model request."""
+    from pipeline.scene_codegen import CODEGEN_SYSTEM_PROMPT
+    from pipeline.script_gen import SCRIPT_SYSTEM_PROMPT
+    from pipeline.storyboard_gen import STORYBOARD_SYSTEM_PROMPT
+
+    words_per_second = 2.5
+    target_seconds = config.pipeline.target_seconds_per_beat
+    min_words = int(target_seconds * words_per_second * 0.7)
+    max_words = int(target_seconds * words_per_second * 1.3)
+    script_rules = SCRIPT_SYSTEM_PROMPT.format(
+        target_seconds=int(target_seconds), min_words=min_words, max_words=max_words
+    )
+    direction = f"\nAdditional creative direction: {extra_instructions.strip()}" if extra_instructions and extra_instructions.strip() else ""
+    prompt = f"""Create a complete math explainer video package in one response.
+
+Title: {title}
+Produce 4 to {config.pipeline.max_scenes} narration beats, each around {target_seconds} seconds.{direction}
+
+NARRATION RULES:
+{script_rules}
+
+STORYBOARD RULES:
+{STORYBOARD_SYSTEM_PROMPT}
+
+SCENE CODE RULES:
+{CODEGEN_SYSTEM_PROMPT}
+
+Return one JSON object with this exact shape:
+{{
+  "title": "...",
+  "audience": "...",
+  "beats": [{{"id":"b1","beat_title":"...","narration":"..."}}],
+  "scenes": [{{"id":"b1","class_name":"...","visual_summary":"...","steps":["..."],"on_screen_text":[],"code":"complete Python source for this scene"}}]
+}}
+
+Return exactly one scene per beat in the same order. Each code value must be a complete standalone Python file satisfying all scene code rules. Escape newlines and quotes as valid JSON. No markdown or extra keys.
+"""
+    response = _create_response_with_retry(
+        model=config.openai.text_model,
+        input=prompt,
+        text={"format": {"type": "json_object"}},
+    )
+    return _parse_json_loose(response.output_text or "")
+
+
 def _parse_json_loose(raw: str) -> Any:
     cleaned = re.sub(r"```$", "", re.sub(r"^```(json)?", "", raw.strip()).strip()).strip()
     try:

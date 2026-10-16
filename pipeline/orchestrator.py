@@ -25,9 +25,41 @@ from pipeline.script_gen import Script, ScriptBeat
 from pipeline.storyboard_gen import StoryboardScene
 from pipeline.openai_client import generate_video_package
 from pipeline.tts_pregen import assert_cached_voiceovers_sane, collect_voiceover_texts, pregenerate_voiceovers
+from pipeline.math_rendering import ensure_math_renderer_available
 
 
 ProgressCallback = Callable[[str, dict], None]
+
+
+def _match_scenes_to_beats(beat_ids: list[str], scenes: list[dict]) -> dict[str, dict]:
+    """Match scenes by exact IDs, falling back to promised order when complete."""
+    if any(not isinstance(scene, dict) or not isinstance(scene.get("id"), str) for scene in scenes):
+        raise ValueError("Every generated scene must be an object with a string 'id' field.")
+
+    scene_ids = [scene["id"] for scene in scenes]
+    scenes_by_id = {scene["id"]: scene for scene in scenes}
+    if len(scenes) == len(beat_ids) and len(scenes_by_id) == len(beat_ids) and set(scene_ids) == set(beat_ids):
+        return scenes_by_id
+
+    if len(scenes) == len(beat_ids):
+        # The prompt requires scenes in beat order. When the model only gets
+        # identifiers wrong, pairing by that order salvages the complete reply.
+        print(
+            "Warning: scene IDs did not match beat IDs; pairing scenes by their "
+            f"requested order. beat_ids={beat_ids!r}, scene_ids={scene_ids!r}",
+            flush=True,
+        )
+        return {beat_id: scene for beat_id, scene in zip(beat_ids, scenes)}
+
+    duplicate_ids = sorted({scene_id for scene_id in scene_ids if scene_ids.count(scene_id) > 1})
+    missing_ids = [beat_id for beat_id in beat_ids if beat_id not in scenes_by_id]
+    extra_ids = [scene_id for scene_id in scene_ids if scene_id not in beat_ids]
+    raise ValueError(
+        "Single-call package must contain exactly one scene for every narration beat. "
+        f"Expected {len(beat_ids)} scenes; received {len(scenes)}. "
+        f"Missing beat IDs: {missing_ids!r}; duplicate scene IDs: {duplicate_ids!r}; "
+        f"unexpected scene IDs: {extra_ids!r}."
+    )
 
 
 def run_pipeline(
@@ -49,16 +81,25 @@ def run_pipeline(
 
     print(f"[1/4] Generating complete video package in one text API call: {title!r}")
     report("generating_script", title=title)
+    # Check local TeX before consuming the package-generation API request.
+    ensure_math_renderer_available()
     package = generate_video_package(title, extra_instructions=extra_instructions)
+    if not isinstance(package, dict):
+        raise ValueError(f"OpenAI package must be a JSON object, got {type(package).__name__}.")
+    raw_beats = package.get("beats")
+    raw_scenes = package.get("scenes")
+    if not isinstance(raw_beats, list) or not isinstance(raw_scenes, list):
+        raise ValueError(
+            "OpenAI package must include 'beats' and 'scenes' arrays; "
+            f"got beats={type(raw_beats).__name__}, scenes={type(raw_scenes).__name__}."
+        )
     script = Script(
         title=package.get("title", title),
         audience=package.get("audience", ""),
-        beats=[ScriptBeat(id=b["id"], beat_title=b.get("beat_title", b["id"]), narration=b["narration"].strip()) for b in package["beats"]],
+        beats=[ScriptBeat(id=b["id"], beat_title=b.get("beat_title", b["id"]), narration=b["narration"].strip()) for b in raw_beats],
     )
-    raw_scenes = package["scenes"]
-    scenes_by_id = {s["id"]: s for s in raw_scenes}
-    if len(scenes_by_id) != len(script.beats) or any(b.id not in scenes_by_id for b in script.beats):
-        raise ValueError("Single-call package must contain exactly one scene for every narration beat.")
+    beat_ids = [beat.id for beat in script.beats]
+    scenes_by_id = _match_scenes_to_beats(beat_ids, raw_scenes)
     storyboard = [
         StoryboardScene(
             id=b.id,

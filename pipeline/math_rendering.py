@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+import numpy as np
 from manim import DOWN, RIGHT, MathTex, Text, TexTemplate, VGroup, config
 
 
@@ -52,16 +53,36 @@ _TEX_BIN_CANDIDATES = (
 
 def ensure_tex_bin_on_path() -> str | None:
     """Prepend a known TeX bin directory to PATH if latex is not already found."""
-    if shutil.which("latex") and shutil.which("dvisvgm"):
-        return str(Path(shutil.which("latex")).parent)
+    latex = shutil.which("latex")
+    dvisvgm = shutil.which("dvisvgm")
+    if latex and dvisvgm:
+        return str(Path(latex).parent)
     for candidate in _TEX_BIN_CANDIDATES:
-        if (candidate / "latex").exists():
+        # A partial TeX install is not sufficient for Manim: MathTex compiles
+        # with latex and converts the resulting DVI to SVG with dvisvgm.
+        if (candidate / "latex").exists() and (candidate / "dvisvgm").exists():
             path = os.environ.get("PATH", "")
             prefix = str(candidate)
             if prefix not in path.split(os.pathsep):
                 os.environ["PATH"] = prefix + os.pathsep + path
             return prefix
     return None
+
+
+def tex_path_environment() -> str:
+    """Return a PATH suitable for TeX subprocesses without mutating our process."""
+    path = os.environ.get("PATH", "")
+    latex = shutil.which("latex", path=path)
+    dvisvgm = shutil.which("dvisvgm", path=path)
+    if latex and dvisvgm:
+        return path
+    for candidate in _TEX_BIN_CANDIDATES:
+        if (candidate / "latex").exists() and (candidate / "dvisvgm").exists():
+            prefix = str(candidate)
+            if prefix not in path.split(os.pathsep):
+                return prefix + os.pathsep + path
+            return path
+    return path
 
 
 def pipeline_tex_template() -> TexTemplate:
@@ -223,12 +244,46 @@ def create_text(value: str, **kwargs: Any):
     return Text(value, **kwargs)
 
 
-def create_math(value: str, **kwargs: Any):
+def line_intersection(first: Any, second: Any) -> np.ndarray:
+    """Return the 2D intersection point of two Manim line segments.
+
+    Manim Mobjects dynamically resolve unknown `get_*` attributes, so
+    `hasattr(line, "get_intersection")` can misleadingly return true even
+    though no such geometry method exists. This helper provides the operation
+    generated scenes commonly intend and rejects parallel or disjoint segments.
+    """
+    start_a = np.asarray(first.get_start(), dtype=float)
+    direction_a = np.asarray(first.get_end(), dtype=float) - start_a
+    start_b = np.asarray(second.get_start(), dtype=float)
+    direction_b = np.asarray(second.get_end(), dtype=float) - start_b
+
+    def cross_2d(a: np.ndarray, b: np.ndarray) -> float:
+        return float(a[0] * b[1] - a[1] * b[0])
+
+    denominator = cross_2d(direction_a, direction_b)
+    if abs(denominator) < 1e-10:
+        raise ValueError("Cannot find a unique intersection for parallel line segments.")
+    offset = start_b - start_a
+    t = cross_2d(offset, direction_b) / denominator
+    u = cross_2d(offset, direction_a) / denominator
+    if not (-1e-9 <= t <= 1 + 1e-9 and -1e-9 <= u <= 1 + 1e-9):
+        raise ValueError("The line segments do not intersect within their endpoints.")
+    return start_a + t * direction_a
+
+
+def create_math(value: str, *parts: str, **kwargs: Any):
     """Create math, propagating TeX errors instead of exposing source text."""
+    values = (value, *parts)
+    for part in values:
+        if not isinstance(part, str):
+            raise TypeError(f"mathematical content must be str, got {type(part).__name__}")
+    sources = [_strip_math_delimiters(part) for part in values]
+    if any(not source.strip() for source in sources):
+        raise ValueError("mathematical content cannot be empty")
     template = ensure_pipeline_tex_template()
     try:
         return MathTex(
-            _strip_math_delimiters(value),
+            *sources,
             tex_template=template,
             **_math_kwargs(kwargs),
         )

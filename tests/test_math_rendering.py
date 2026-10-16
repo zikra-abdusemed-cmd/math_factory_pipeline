@@ -4,9 +4,12 @@ import unittest
 from pathlib import Path
 
 from manim import config
+from manim import Line
 
 from pipeline.math_rendering import (
     create_content,
+    create_math,
+    line_intersection,
     ensure_math_renderer_available,
     ensure_pipeline_tex_template,
     is_math_content,
@@ -58,6 +61,8 @@ class MathRenderingTests(unittest.TestCase):
         self.assertNotIn("Text", calls)
         self.assertGreaterEqual(calls.count("create_content"), 2)
         self.assertIn("ensure_pipeline_tex_template", calls)
+        self.assertIn("from math import", normalized)
+        self.assertIn("import numpy as np", normalized)
         class_defs = [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
         self.assertEqual(class_defs[0].bases[0].id, "SyncedVoiceoverScene")
         self.assertIn("from pipeline.voiceover_sync import SyncedVoiceoverScene", normalized)
@@ -74,6 +79,60 @@ class MathRenderingTests(unittest.TestCase):
         ]
         self.assertNotIn("MathTex", calls)
         self.assertIn("create_math", calls)
+
+    def test_sector_outer_radius_is_normalized_for_manim(self):
+        normalized = normalize_visible_content("from manim import *\nwedge = Sector(outer_radius=2, angle=1)\n")
+        tree = ast.parse(normalized)
+        sector_call = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "Sector"
+        )
+        self.assertIn("radius", [keyword.arg for keyword in sector_call.keywords])
+        self.assertNotIn("outer_radius", [keyword.arg for keyword in sector_call.keywords])
+
+    def test_get_intersection_calls_use_pipeline_helper(self):
+        normalized = normalize_visible_content(
+            "from manim import *\np = first.get_intersection(second)\n"
+        )
+        tree = ast.parse(normalized)
+        call = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "pipeline_line_intersection"
+        )
+        self.assertEqual(len(call.args), 2)
+
+    def test_line_intersection_returns_crossing_point(self):
+        point = line_intersection(Line([-1, -1, 0], [1, 1, 0]), Line([-1, 1, 0], [1, -1, 0]))
+        self.assertAlmostEqual(point[0], 0)
+        self.assertAlmostEqual(point[1], 0)
+
+    def test_python_consumed_tex_escapes_are_restored(self):
+        source = r'''from manim import *
+x = MathTex("\frac{a}{b}")
+y = MathTex("\theta + \frac{1}{2}")
+'''
+        normalized = normalize_visible_content(source)
+        tree = ast.parse(normalized)
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "create_math"]
+        self.assertEqual([call.args[0].value for call in calls], [r"\frac{a}{b}", r"\theta + \frac{1}{2}"])
+
+    def test_invalid_unicode_tex_escapes_are_made_raw_before_parsing(self):
+        source = r'''from manim import *
+x = Tex("\xi + \underbrace{a}_{b}")
+'''
+        normalized = normalize_visible_content(source)
+        tree = ast.parse(normalized)
+        calls = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "create_math"
+        ]
+        self.assertEqual(calls[0].args[0].value, r"\xi + \underbrace{a}_{b}")
+
+    def test_create_math_accepts_multiple_mathtex_parts(self):
+        ensure_pipeline_tex_template()
+        mob = create_math(r"f(x)=b^x", r"\qquad b>0,\ b\ne 1", font_size=32)
+        self.assertEqual(len(mob), 2)
+        self.assertGreater(mob.width, 0)
 
     def test_future_import_stays_first(self):
         normalized = normalize_visible_content(

@@ -99,7 +99,7 @@ Return one JSON object with this exact shape:
   "scenes": [{{"id":"b1","class_name":"...","visual_summary":"...","steps":["..."],"on_screen_text":[],"code":"complete Python source for this scene"}}]
 }}
 
-Return exactly one scene per beat in the same order. Each code value must be a complete standalone Python file satisfying all scene code rules. Escape newlines and quotes as valid JSON. No markdown or extra keys.
+Return exactly one scene per beat, in the same order, and copy each beat's id exactly into its matching scene's id. Each code value must be a complete standalone Python file satisfying all scene code rules. Escape newlines and quotes as valid JSON. No markdown or extra keys.
 """
     response = _create_response_with_retry(
         model=config.openai.text_model,

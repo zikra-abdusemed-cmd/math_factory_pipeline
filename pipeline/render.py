@@ -44,6 +44,8 @@ def render_scene(scene: GeneratedScene, media_dir: Path, project_root: Path, qua
     media_dir.mkdir(parents=True, exist_ok=True)
     timeout = _scene_timeout_seconds(quality)
     cmd = [
+        os.fspath(Path(os.sys.executable)),
+        "-m",
         "manim",
         QUALITY_FLAGS[quality],
         "--disable_caching",
@@ -54,10 +56,9 @@ def render_scene(scene: GeneratedScene, media_dir: Path, project_root: Path, qua
     ]
     env = {**os.environ, "PYTHONPATH": str(project_root) + os.pathsep + os.environ.get("PYTHONPATH", "")}
     # Manim MathTex needs latex/dvisvgm; GUI-launched servers often lack TeX PATH.
-    from pipeline.math_rendering import ensure_tex_bin_on_path
+    from pipeline.math_rendering import tex_path_environment
 
-    ensure_tex_bin_on_path()
-    env["PATH"] = os.environ.get("PATH", "")
+    env["PATH"] = tex_path_environment()
     try:
         result = subprocess.run(
             cmd,

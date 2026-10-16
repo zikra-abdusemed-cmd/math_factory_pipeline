@@ -13,15 +13,19 @@ from __future__ import annotations
 
 import os
 import ast
+import io
+import re
 import shutil
 import subprocess
+import sys
+import tokenize
 from dataclasses import dataclass
 from pathlib import Path
 
 from pipeline.openai_client import generate_text
 from pipeline.script_gen import ScriptBeat
 from pipeline.storyboard_gen import StoryboardScene
-from pipeline.math_rendering import ensure_math_renderer_available
+from pipeline.math_rendering import ensure_math_renderer_available, tex_path_environment
 import config
 
 CODEGEN_SYSTEM_PROMPT = """You are a senior Manim (Community Edition, v0.19+) \
@@ -65,6 +69,19 @@ audio, video, or font files.
 from pipeline.math_rendering for any on-screen label whose content may mix \
 prose and math. Use MathTex / create_math only for pure equations. Never put \
 raw LaTeX, scripts (^ or _), or mathematical source inside Text.
+- Use the pipeline's `create_math` for TeX; it installs the supported template \
+even if a scene tries Manim's `Tex` constructor.
+- `create_math` accepts one or more positional TeX strings, like MathTex; \
+use separate positional parts only when you need separate alignment/isolation.
+- Common scalar functions from Python's math module and NumPy (`np`) are \
+available in generated scenes; use `np` for arrays and vectorized graph functions.
+- For a filled circular wedge, call `Sector(radius=..., start_angle=..., \
+angle=...)`; use `AnnularSector(inner_radius=..., outer_radius=...)` for a ring wedge.
+- For crossing line segments use `pipeline_line_intersection(line_a, line_b)`; \
+Manim Mobjects do not provide a `get_intersection` method.
+- Write TeX-bearing Python strings as raw strings (for example, \
+`r"\\frac{a}{b}"`) or escape every backslash. Ordinary strings interpret \
+sequences such as `\\f` and `\\t` before MathTex receives them.
 - Keep every on-screen element within the default frame (do not manually \
 change camera/frame size). Clean up each visual beat with FadeOut before \
 introducing an unrelated one so the screen doesn't get cluttered.
@@ -125,6 +142,42 @@ def _strip_code_fences(code: str) -> str:
     return code.strip() + "\n"
 
 
+def _rawify_invalid_tex_strings(code: str) -> str:
+    """Make invalid Python TeX escapes raw before Python parses the module.
+
+    Most TeX escapes that Python consumes can be repaired from AST string
+    values. Commands such as ``\\xi`` and ``\\underbrace`` are worse: Python
+    treats ``\\x`` and ``\\u`` as incomplete hex/Unicode escapes and rejects
+    the entire file before an AST exists. Only string tokens that fail Python
+    literal evaluation are changed; valid Python escape sequences are kept.
+    """
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(code).readline))
+    except (tokenize.TokenError, IndentationError):
+        return code
+
+    for index, token in enumerate(tokens):
+        if token.type != tokenize.STRING:
+            continue
+        match = re.match(r"(?i)^([rubf]*)(\"\"\"|'''|\"|')", token.string)
+        if not match:
+            continue
+        prefix, quote = match.groups()
+        lowered = prefix.lower()
+        if "r" in lowered or "b" in lowered:
+            continue
+        try:
+            ast.literal_eval(token.string)
+        except (SyntaxError, ValueError):
+            if not re.search(r"\\[A-Za-z]+", token.string[len(prefix) + len(quote) :]):
+                continue
+            # `r` is valid on ordinary and formatted strings. Unicode is the
+            # default for Python 3, so discard the obsolete `u` prefix.
+            safe_prefix = "fr" if "f" in lowered else "r"
+            tokens[index] = token._replace(string=safe_prefix + token.string[len(prefix) :])
+    return tokenize.untokenize(tokens)
+
+
 class _UniversalTextTransformer(ast.NodeTransformer):
     """Route generated Text/MathTex/VoiceoverScene through pipeline helpers."""
 
@@ -142,8 +195,60 @@ class _UniversalTextTransformer(ast.NodeTransformer):
 
         if func_name == "Text":
             node.func = ast.Name(id="create_content", ctx=ast.Load())
-        elif func_name == "MathTex":
+        elif func_name in {"MathTex", "Tex", "SingleStringMathTex"}:
             node.func = ast.Name(id="create_math", ctx=ast.Load())
+        elif func_name == "line_intersection":
+            # Avoid collision with Manim's similarly named utility, which
+            # expects point arrays rather than Line mobjects.
+            node.func = ast.Name(id="pipeline_line_intersection", ctx=ast.Load())
+        elif func_name == "Sector":
+            # Manim's Sector uses `radius`; `outer_radius` belongs to
+            # AnnularSector and otherwise gets passed twice by Sector.__init__.
+            has_radius = any(keyword.arg == "radius" for keyword in node.keywords)
+            if has_radius:
+                node.keywords = [keyword for keyword in node.keywords if keyword.arg != "outer_radius"]
+            else:
+                for keyword in node.keywords:
+                    if keyword.arg == "outer_radius":
+                        keyword.arg = "radius"
+        elif (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get_intersection"
+            and len(node.args) == 1
+            and not node.keywords
+        ):
+            first_line = node.func.value
+            node.func = ast.Name(id="pipeline_line_intersection", ctx=ast.Load())
+            node.args.insert(0, first_line)
+        return node
+
+    def visit_Constant(self, node: ast.Constant) -> ast.AST:
+        """Repair common TeX escapes consumed by ordinary Python strings.
+
+        For example, ``"\\frac{x}{y}"`` in generated source becomes a
+        form-feed followed by ``rac`` before AST rewriting.  Restore known
+        TeX commands so the one-call package can be validated without another
+        paid model request.
+        """
+        if isinstance(node.value, str):
+            repairs = {
+                "\x08ar": r"\bar",
+                "\x08egin": r"\begin",
+                "\x08eta": r"\beta",
+                "\x0crac": r"\frac",
+                "\nabla": r"\nabla",
+                "\rangle": r"\rangle",
+                "\rceil": r"\rceil",
+                "\rfloor": r"\rfloor",
+            }
+            value = node.value
+            # Repair control-character prefixes only when they form a known
+            # TeX command; ordinary tabs/newlines in narration remain intact.
+            for malformed, corrected in repairs.items():
+                value = value.replace(malformed, corrected)
+            for suffix in ("heta", "ext", "imes", "an", "o"):
+                value = value.replace("\t" + suffix, "\\t" + suffix)
+            node.value = value
         return node
 
     def visit_ClassDef(self, node: ast.ClassDef) -> ast.AST:
@@ -173,6 +278,7 @@ def normalize_visible_content(code: str) -> str:
     This is deterministic enforcement, independent of prompt compliance.
     Syntax errors are reported before Manim is launched.
     """
+    code = _rawify_invalid_tex_strings(code)
     try:
         tree = ast.parse(code)
     except SyntaxError as exc:
@@ -183,8 +289,15 @@ def normalize_visible_content(code: str) -> str:
     ast.fix_missing_locations(tree)
 
     helpers = ast.parse(
-        "from pipeline.math_rendering import create_content, create_math, ensure_pipeline_tex_template\n"
+        "from pipeline.math_rendering import create_content, create_math, ensure_pipeline_tex_template, line_intersection as pipeline_line_intersection\n"
         "from pipeline.voiceover_sync import SyncedVoiceoverScene\n"
+        # Make the standard scalar math vocabulary available even when a
+        # generated scene forgets to import it explicitly. `np` is exported
+        # by Manim's wildcard import; keep numpy as the preferred API in the
+        # prompt, while these aliases cover common bare-name usage.
+        "import math\n"
+        "from math import (acos, acosh, asin, asinh, atan, atan2, atanh, ceil, comb, copysign, cos, cosh, degrees, dist, e, erf, erfc, exp, expm1, factorial, fabs, floor, fmod, frexp, fsum, gamma, gcd, hypot, inf, isclose, isfinite, isinf, isnan, isqrt, ldexp, lgamma, lcm, log, log10, log1p, log2, modf, perm, pi, pow, prod, radians, remainder, sin, sinh, sqrt, tan, tanh, tau, trunc)\n"
+        "import numpy as np\n"
         "ensure_pipeline_tex_template()\n"
     ).body
 
@@ -202,19 +315,28 @@ def normalize_visible_content(code: str) -> str:
 
 def _manim_env(project_root: Path) -> dict[str, str]:
     """Environment for Manim subprocesses, including TeX binaries on PATH."""
-    from pipeline.math_rendering import ensure_tex_bin_on_path
-
-    ensure_tex_bin_on_path()
     env = {
         **os.environ,
         "PYTHONPATH": str(project_root) + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        "PATH": tex_path_environment(),
     }
     return env
+
+
+def _as_text_output(value: str | bytes | None) -> str:
+    """Normalize subprocess output, including TimeoutExpired's bytes variant."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
 
 
 def _try_render(file_path: Path, class_name: str, project_root: Path) -> tuple[bool, str]:
     """Low-quality, offline dry-run used only to validate generated Manim code."""
     cmd = [
+        sys.executable,
+        "-m",
         "manim",
         "-ql",
         "--disable_caching",
@@ -238,11 +360,13 @@ def _try_render(file_path: Path, class_name: str, project_root: Path) -> tuple[b
             env=env,
         )
     except subprocess.TimeoutExpired as exc:
-        output = (exc.stdout or "") + "\n" + (exc.stderr or "")
+        output = _as_text_output(exc.stdout) + "\n" + _as_text_output(exc.stderr)
         return False, f"Offline validation timed out after 300 seconds.\n{output[-3000:]}"
     if result.returncode == 0:
         return True, ""
-    return False, (result.stdout[-3000:] + "\n" + result.stderr[-3000:])
+    stdout = _as_text_output(result.stdout)
+    stderr = _as_text_output(result.stderr)
+    return False, stdout[-3000:] + "\n" + stderr[-3000:]
 
 
 def generate_scene_code(

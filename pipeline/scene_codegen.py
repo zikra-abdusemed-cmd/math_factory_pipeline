@@ -59,12 +59,35 @@ waits for the audio to finish. If there is no animation, use \
 for multi-word Text (Write is expensive). Avoid dense NumberPlane grids, \
 hundreds of mobjects, updaters, and nested VGroups larger than ~20 items. \
 Aim for 4-8 play() calls max per beat.
+- Apply `GrowArrow` only to one `Arrow` at a time. For a group of arrows, \
+use `Create(group)` or `LaggedStart(*[GrowArrow(arrow) for arrow in arrows])`; \
+`GrowArrow(VGroup(...))` fails because a VGroup has no own start point.
 - Only use Manim's own primitives: geometric Mobjects (Circle, Square, Dot, \
 Line, Arrow, Polygon, Rectangle, Triangle, Dot, ...), Text, \
 Axes/NumberPlane/graphing, VGroup, and standard animations (Create, Write, \
 FadeIn, FadeOut, Transform, ReplacementTransform, Indicate, \
 .animate.shift/scale/rotate/move_to, etc). NEVER reference external image, \
 audio, video, or font files.
+- For spheres, cones, cylinders, prisms, and other solids, use Manim's \
+`ThreeDScene` with `ThreeDAxes` only when axes help explain coordinates. Set \
+the camera orientation once before the voiceover block; use a stable oblique \
+view (for example `phi=65*DEGREES, theta=-45*DEGREES`). Center and scale the \
+solid so the full shape and labels fit the frame. Keep the camera still during \
+the beat; avoid ambient rotation and moving the camera while drawing edges.
+- Build solids from one primary 3D surface (`Sphere`, `Cone`, `Cylinder`, \
+`Prism`, `Cube`, or `Polyhedron`) with a restrained fill opacity. Draw only \
+edges that belong to the solid, using its exact 3D vertex coordinates and \
+`Line3D`; do not approximate edges with screen-space `Line`s, draw diameters \
+through curved surfaces, or add duplicate outlines. Use dashed, muted lines \
+only for edges that are actually hidden from the chosen camera. Keep labels \
+outside the surface and use `add_fixed_in_frame_mobjects` for explanatory \
+text that should remain readable over a 3D camera view.
+- For a prism, define the bottom and top vertices once as 3D NumPy points, \
+then reuse those same points for the faces, corresponding vertical edges, and \
+vertex markers. For a cone, place the apex and base in a consistent coordinate \
+system and do not extend the axis or generatrices beyond the apex/base. For a \
+sphere, avoid drawing straight lines across its surface as if they were solid \
+edges; use great-circle arcs or latitude/longitude curves instead.
 - Use Text only for ordinary natural language. Prefer create_content(...) \
 from pipeline.math_rendering for any on-screen label whose content may mix \
 prose and math. Use MathTex / create_math only for pure equations. Never put \
@@ -79,6 +102,19 @@ available in generated scenes; use `np` for arrays and vectorized graph function
 angle=...)`; use `AnnularSector(inner_radius=..., outer_radius=...)` for a ring wedge.
 - For crossing line segments use `pipeline_line_intersection(line_a, line_b)`; \
 Manim Mobjects do not provide a `get_intersection` method.
+- For `Arc(..., arc_center=...)`, pass a numeric point/vector such as `center` \
+or `dot.get_center()`, never a Mobject like `Dot` directly. Arc start angles \
+are measured from the arc center; compute the angle to an endpoint with \
+`np.arctan2(y, x)`.
+- Use `Ellipse(width=..., height=...)` for a complete oval. `Arc` is circular \
+by default; if an elliptical arc is needed, the pipeline supports \
+`Arc(width=..., height=..., ...)` by resizing it after construction.
+- Keep Mobjects and points distinct: use `mobject.get_center()` in coordinate \
+arithmetic (`point + RIGHT`, `Dot(point)`, `arc_center=...`). `move_to` and \
+`shift` accept either a Mobject or a point/vector, but arithmetic with a \
+Mobject is invalid; use `mobject.get_center()` when you mean its position. \
+`Circle.point_at_angle(angle)` also returns a point, whereas the circle itself \
+is a Mobject.
 - Write TeX-bearing Python strings as raw strings (for example, \
 `r"\\frac{a}{b}"`) or escape every backslash. Ordinary strings interpret \
 sequences such as `\\f` and `\\t` before MathTex receives them.
@@ -181,6 +217,68 @@ def _rawify_invalid_tex_strings(code: str) -> str:
 class _UniversalTextTransformer(ast.NodeTransformer):
     """Route generated Text/MathTex/VoiceoverScene through pipeline helpers."""
 
+    _MOBJECT_CONSTRUCTORS = {
+        "Angle", "AnnularSector", "Arrow", "Arc", "Brace", "Circle", "DashedLine",
+        "Dot", "Ellipse", "Group", "Line", "NumberPlane", "Polygon", "Rectangle", "Sector",
+        "Square", "SurroundingRectangle", "Text", "Triangle", "VGroup", "VMobject",
+        "Vector", "axes", "create_content", "create_math", "graph",
+    }
+
+    def __init__(self) -> None:
+        self.mobject_names: set[str] = set()
+        self.mobject_kinds: dict[str, str] = {}
+
+    def _is_mobject_name(self, node: ast.expr) -> bool:
+        return isinstance(node, ast.Name) and node.id in self.mobject_names
+
+    def _track_assignment(self, node: ast.Assign | ast.AnnAssign) -> None:
+        value = node.value
+        is_mobject = (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id in self._MOBJECT_CONSTRUCTORS
+        )
+        kind = value.func.id if is_mobject else None
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        for target in targets:
+            if isinstance(target, ast.Name):
+                if is_mobject:
+                    self.mobject_names.add(target.id)
+                    self.mobject_kinds[target.id] = kind or ""
+                else:
+                    self.mobject_names.discard(target.id)
+                    self.mobject_kinds.pop(target.id, None)
+
+    def visit_Assign(self, node: ast.Assign) -> ast.AST:
+        self.generic_visit(node)
+        self._track_assignment(node)
+        return node
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> ast.AST:
+        self.generic_visit(node)
+        self._track_assignment(node)
+        return node
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+        outer_names = self.mobject_names
+        outer_kinds = self.mobject_kinds
+        self.mobject_names = set()
+        self.mobject_kinds = {}
+        self.generic_visit(node)
+        self.mobject_names = outer_names
+        self.mobject_kinds = outer_kinds
+        return node
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
+        outer_names = self.mobject_names
+        outer_kinds = self.mobject_kinds
+        self.mobject_names = set()
+        self.mobject_kinds = {}
+        self.generic_visit(node)
+        self.mobject_names = outer_names
+        self.mobject_kinds = outer_kinds
+        return node
+
     def visit_Call(self, node: ast.Call) -> ast.AST:
         self.generic_visit(node)
         func_name: str | None = None
@@ -211,6 +309,54 @@ class _UniversalTextTransformer(ast.NodeTransformer):
                 for keyword in node.keywords:
                     if keyword.arg == "outer_radius":
                         keyword.arg = "radius"
+        elif func_name == "Arc":
+            dimension_keywords = {keyword.arg for keyword in node.keywords}
+            if dimension_keywords & {"width", "height"}:
+                node.func = ast.Name(id="pipeline_arc", ctx=ast.Load())
+            # Arc.arc_center must be a coordinate vector. Models often pass a
+            # Dot or another Mobject, which makes Manim's np.asarray fail.
+            for keyword in node.keywords:
+                if keyword.arg == "arc_center" and self._is_mobject_name(keyword.value):
+                    keyword.value = ast.Call(
+                        func=ast.Attribute(
+                            value=keyword.value,
+                            attr="get_center",
+                            ctx=ast.Load(),
+                        ),
+                        args=[],
+                        keywords=[],
+                    )
+        elif func_name == "Dot":
+            # Dot's point parameter is a coordinate, not a Mobject. Convert
+            # simple variable arguments; leave vector expressions unchanged.
+            if node.args and self._is_mobject_name(node.args[0]):
+                node.args[0] = ast.Call(
+                    func=ast.Attribute(value=node.args[0], attr="get_center", ctx=ast.Load()),
+                    args=[],
+                    keywords=[],
+                )
+            for keyword in node.keywords:
+                if keyword.arg == "point" and self._is_mobject_name(keyword.value):
+                    keyword.value = ast.Call(
+                        func=ast.Attribute(value=keyword.value, attr="get_center", ctx=ast.Load()),
+                        args=[],
+                        keywords=[],
+                    )
+        elif func_name == "GrowArrow":
+            # GrowArrow reads get_start() from its input and only supports a
+            # single Arrow, not a VGroup/Group of Arrow objects.
+            grouped_arrows = (
+                bool(node.args)
+                and (
+                    (isinstance(node.args[0], ast.Name)
+                     and self.mobject_kinds.get(node.args[0].id) in {"VGroup", "Group"})
+                    or (isinstance(node.args[0], ast.Call)
+                        and isinstance(node.args[0].func, ast.Name)
+                        and node.args[0].func.id in {"VGroup", "Group"})
+                )
+            )
+            if grouped_arrows:
+                node.func = ast.Name(id="Create", ctx=ast.Load())
         elif (
             isinstance(node.func, ast.Attribute)
             and node.func.attr == "get_intersection"
@@ -254,9 +400,18 @@ class _UniversalTextTransformer(ast.NodeTransformer):
     def visit_ClassDef(self, node: ast.ClassDef) -> ast.AST:
         self.generic_visit(node)
         new_bases: list[ast.expr] = []
+        uses_3d_scene = any(
+            isinstance(base, ast.Name) and base.id == "ThreeDScene"
+            for base in node.bases
+        )
         for base in node.bases:
+            if isinstance(base, ast.Name) and base.id == "ThreeDScene":
+                continue
             if isinstance(base, ast.Name) and base.id == "VoiceoverScene":
-                new_bases.append(ast.Name(id="SyncedVoiceoverScene", ctx=ast.Load()))
+                if uses_3d_scene:
+                    new_bases.append(ast.Name(id="SyncedThreeDVoiceoverScene", ctx=ast.Load()))
+                else:
+                    new_bases.append(ast.Name(id="SyncedVoiceoverScene", ctx=ast.Load()))
             else:
                 new_bases.append(base)
         node.bases = new_bases
@@ -290,7 +445,8 @@ def normalize_visible_content(code: str) -> str:
 
     helpers = ast.parse(
         "from pipeline.math_rendering import create_content, create_math, ensure_pipeline_tex_template, line_intersection as pipeline_line_intersection\n"
-        "from pipeline.voiceover_sync import SyncedVoiceoverScene\n"
+        "from pipeline.voiceover_sync import SyncedThreeDVoiceoverScene, SyncedVoiceoverScene\n"
+        "from pipeline.manim_compat import arc_with_dimensions as pipeline_arc\n"
         # Make the standard scalar math vocabulary available even when a
         # generated scene forgets to import it explicitly. `np` is exported
         # by Manim's wildcard import; keep numpy as the preferred API in the

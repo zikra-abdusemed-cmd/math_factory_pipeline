@@ -89,7 +89,7 @@ def get_config() -> dict[str, Any]:
     return {
         "default_quality": config.pipeline.render_quality,
         "voice_provider": config.pipeline.voice_provider,
-        "max_scenes": config.pipeline.max_scenes,
+        "max_scenes": max(4, config.pipeline.max_scenes),
         "qualities": [
             {"id": "ql", "label": "Draft", "hint": "Fast, low resolution"},
             {"id": "qm", "label": "Balanced", "hint": "Good for most runs"},

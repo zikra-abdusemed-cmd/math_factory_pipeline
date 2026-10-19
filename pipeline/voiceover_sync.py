@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from manim import config
+from manim import ThreeDScene, config
 from manim_voiceover import VoiceoverScene
 from manim_voiceover.tracker import VoiceoverTracker
 
@@ -63,6 +63,12 @@ class SyncedVoiceoverScene(VoiceoverScene):
         if capped < frame:
             return None
         return capped
+
+
+class SyncedThreeDVoiceoverScene(ThreeDScene, SyncedVoiceoverScene):
+    """ThreeDScene with the same voiceover timing cap as 2D generated scenes."""
+
+    pass
 
 
 def play_remaining(

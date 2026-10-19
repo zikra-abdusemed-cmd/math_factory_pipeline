@@ -77,7 +77,9 @@ def generate_script(title: str, extra_instructions: str | None = None) -> Script
     system_prompt = SCRIPT_SYSTEM_PROMPT.format(
         target_seconds=int(target_seconds), min_words=min_words, max_words=max_words
     )
-    user_prompt = SCRIPT_USER_PROMPT.format(title=title, max_scenes=config.pipeline.max_scenes)
+    user_prompt = SCRIPT_USER_PROMPT.format(
+        title=title, max_scenes=max(4, config.pipeline.max_scenes)
+    )
     if extra_instructions and extra_instructions.strip():
         user_prompt += (
             "\nThe user also asked for the following additional creative direction: "

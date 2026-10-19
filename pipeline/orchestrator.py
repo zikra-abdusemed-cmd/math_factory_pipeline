@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 from pathlib import Path
 from collections.abc import Callable
 
@@ -23,7 +24,7 @@ from pipeline.concat import concat_videos
 from pipeline.scene_codegen import GeneratedScene, normalize_visible_content, _strip_code_fences, _try_render
 from pipeline.script_gen import Script, ScriptBeat
 from pipeline.storyboard_gen import StoryboardScene
-from pipeline.openai_client import generate_video_package
+from pipeline.openai_client import generate_video_package, generate_missing_video_scenes
 from pipeline.tts_pregen import assert_cached_voiceovers_sane, collect_voiceover_texts, pregenerate_voiceovers
 from pipeline.math_rendering import ensure_math_renderer_available
 
@@ -62,6 +63,106 @@ def _match_scenes_to_beats(beat_ids: list[str], scenes: list[dict]) -> dict[str,
     )
 
 
+def _prepare_missing_scene_request(
+    beats: list[ScriptBeat], scenes: list[object]
+) -> tuple[list[dict], list[dict[str, str]]]:
+    """Keep one valid scene per expected ID and describe omitted beats."""
+    expected_ids = {beat.id for beat in beats}
+    retained: list[dict] = []
+    seen: set[str] = set()
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
+        scene_id = scene.get("id")
+        if not isinstance(scene_id, str) or scene_id not in expected_ids or scene_id in seen:
+            continue
+        retained.append(scene)
+        seen.add(scene_id)
+
+    missing = []
+    for beat in beats:
+        if beat.id in seen:
+            continue
+        suffix = re.sub(r"[^A-Za-z0-9]+", " ", beat.id).title().replace(" ", "") or "Beat"
+        if not suffix[0].isalpha():
+            suffix = f"Beat{suffix}"
+        missing.append({
+            "id": beat.id,
+            "beat_title": beat.beat_title,
+            "narration": beat.narration,
+            "class_name": f"SupplementalScene{suffix}",
+        })
+    return retained, missing
+
+
+def _parse_script_beats(raw_beats: list[object]) -> list[ScriptBeat]:
+    """Validate model-provided beats before indexing or writing artifacts."""
+    beats: list[ScriptBeat] = []
+    seen_ids: set[str] = set()
+    for index, raw in enumerate(raw_beats, start=1):
+        if not isinstance(raw, dict):
+            raise ValueError(f"Narration beat {index} must be an object.")
+        beat_id = raw.get("id")
+        narration = raw.get("narration")
+        if not isinstance(beat_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", beat_id.strip()):
+            raise ValueError(
+                f"Narration beat {index} must have a non-empty 'id' containing only letters, numbers, '_' or '-'."
+            )
+        beat_id = beat_id.strip()
+        if beat_id in seen_ids:
+            raise ValueError(f"Narration beat IDs must be unique; duplicate ID: {beat_id!r}.")
+        if not isinstance(narration, str) or not narration.strip():
+            raise ValueError(f"Narration beat {beat_id!r} must have non-empty string narration.")
+        beat_title = raw.get("beat_title", beat_id)
+        if not isinstance(beat_title, str):
+            beat_title = beat_id
+        beats.append(ScriptBeat(id=beat_id, beat_title=beat_title, narration=narration.strip()))
+        seen_ids.add(beat_id)
+    if len(beats) < 1:
+        raise ValueError("OpenAI package must include at least one narration beat.")
+    scene_limit = max(4, config.pipeline.max_scenes)
+    if len(beats) > scene_limit:
+        raise ValueError(
+            f"Video package exceeds the effective scene limit of {scene_limit}; received {len(beats)} beats. "
+            "The package generator requires at least 4 beats, so MAX_SCENES values below 4 are treated as 4."
+        )
+    return beats
+
+
+def _build_storyboard(script: Script, scenes_by_id: dict[str, dict]) -> list[StoryboardScene]:
+    """Validate scene metadata so malformed JSON fails before artifact writes."""
+    storyboard: list[StoryboardScene] = []
+    seen_class_names: set[str] = set()
+    for beat in script.beats:
+        scene = scenes_by_id[beat.id]
+        class_name = scene.get("class_name")
+        code = scene.get("code")
+        if not isinstance(class_name, str) or not re.fullmatch(r"[A-Za-z_]\w*", class_name):
+            raise ValueError(f"Scene for beat {beat.id!r} must have a valid Python 'class_name'.")
+        if class_name in seen_class_names:
+            raise ValueError(f"Generated scene class names must be unique; duplicate: {class_name!r}.")
+        if not isinstance(code, str) or not code.strip():
+            raise ValueError(f"Scene for beat {beat.id!r} must include non-empty Python 'code'.")
+        steps = scene.get("steps", [])
+        on_screen_text = scene.get("on_screen_text", [])
+        if not isinstance(steps, list) or not all(isinstance(item, str) for item in steps):
+            steps = []
+        if not isinstance(on_screen_text, list) or not all(isinstance(item, str) for item in on_screen_text):
+            on_screen_text = []
+        visual_summary = scene.get("visual_summary", "")
+        if not isinstance(visual_summary, str):
+            visual_summary = ""
+        storyboard.append(StoryboardScene(
+            id=beat.id,
+            class_name=class_name,
+            visual_summary=visual_summary,
+            steps=steps,
+            on_screen_text=on_screen_text,
+        ))
+        seen_class_names.add(class_name)
+    return storyboard
+
+
 def run_pipeline(
     title: str,
     quality: str | None = None,
@@ -93,23 +194,35 @@ def run_pipeline(
             "OpenAI package must include 'beats' and 'scenes' arrays; "
             f"got beats={type(raw_beats).__name__}, scenes={type(raw_scenes).__name__}."
         )
+    package_title = package.get("title", title)
+    package_audience = package.get("audience", "")
     script = Script(
-        title=package.get("title", title),
-        audience=package.get("audience", ""),
-        beats=[ScriptBeat(id=b["id"], beat_title=b.get("beat_title", b["id"]), narration=b["narration"].strip()) for b in raw_beats],
+        title=package_title if isinstance(package_title, str) and package_title.strip() else title,
+        audience=package_audience if isinstance(package_audience, str) else "",
+        beats=_parse_script_beats(raw_beats),
     )
     beat_ids = [beat.id for beat in script.beats]
-    scenes_by_id = _match_scenes_to_beats(beat_ids, raw_scenes)
-    storyboard = [
-        StoryboardScene(
-            id=b.id,
-            class_name=scenes_by_id[b.id]["class_name"],
-            visual_summary=scenes_by_id[b.id].get("visual_summary", ""),
-            steps=list(scenes_by_id[b.id].get("steps", [])),
-            on_screen_text=list(scenes_by_id[b.id].get("on_screen_text", [])),
+    if len(raw_scenes) != len(beat_ids):
+        retained_scenes, missing_beats = _prepare_missing_scene_request(script.beats, raw_scenes)
+        print(
+            f"Package omitted {len(missing_beats)} scene(s); requesting only those beat scenes.",
+            flush=True,
         )
-        for b in script.beats
-    ]
+        report(
+            "completing_missing_scenes",
+            scene_total=len(beat_ids),
+            missing_scene_ids=[beat["id"] for beat in missing_beats],
+        )
+        supplemental_scenes = generate_missing_video_scenes(
+            title=script.title,
+            audience=script.audience,
+            missing_beats=missing_beats,
+            existing_scenes=retained_scenes,
+            extra_instructions=extra_instructions,
+        )
+        raw_scenes = retained_scenes + supplemental_scenes
+    scenes_by_id = _match_scenes_to_beats(beat_ids, raw_scenes)
+    storyboard = _build_storyboard(script, scenes_by_id)
     (run_dir / "script.json").write_text(
         json.dumps(dataclasses.asdict(script), indent=2), encoding="utf-8"
     )
@@ -123,7 +236,6 @@ def run_pipeline(
     )
     report("storyboard_generated", scene_total=len(storyboard))
 
-    beats_by_id = {b.id: b for b in script.beats}
     generated_scenes = []
 
     scenes_dir.mkdir(parents=True, exist_ok=True)
@@ -142,8 +254,7 @@ def run_pipeline(
         ok, error = _try_render(file_path, scene_plan.class_name, config.PROJECT_ROOT)
         if not ok:
             raise RuntimeError(
-                f"Single-call generated scene {scene_plan.class_name} failed local validation. "
-                f"No repair API call was made, to preserve the one-call limit.\n{error}"
+                f"Generated scene {scene_plan.class_name} failed local validation.\n{error}"
             )
         generated = GeneratedScene(class_name=scene_plan.class_name, file_path=file_path, module_stem=module_stem)
         generated_scenes.append(generated)

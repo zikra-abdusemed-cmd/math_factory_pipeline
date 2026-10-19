@@ -80,7 +80,7 @@ def generate_video_package(title: str, extra_instructions: str | None = None) ->
     prompt = f"""Create a complete math explainer video package in one response.
 
 Title: {title}
-Produce 4 to {config.pipeline.max_scenes} narration beats, each around {target_seconds} seconds.{direction}
+Produce 4 to {max(4, config.pipeline.max_scenes)} narration beats, each around {target_seconds} seconds.{direction}
 
 NARRATION RULES:
 {script_rules}
@@ -107,6 +107,79 @@ Return exactly one scene per beat, in the same order, and copy each beat's id ex
         text={"format": {"type": "json_object"}},
     )
     return _parse_json_loose(response.output_text or "")
+
+
+def generate_missing_video_scenes(
+    title: str,
+    audience: str,
+    missing_beats: list[dict[str, str]],
+    existing_scenes: list[dict[str, Any]],
+    extra_instructions: str | None = None,
+) -> list[dict[str, Any]]:
+    """Generate only scenes omitted from an otherwise usable package reply."""
+    from pipeline.scene_codegen import CODEGEN_SYSTEM_PROMPT
+
+    missing_json = json.dumps(missing_beats, ensure_ascii=False, indent=2)
+    existing_summaries = [
+        {
+            "id": scene.get("id"),
+            "visual_summary": scene.get("visual_summary", ""),
+        }
+        for scene in existing_scenes
+        if isinstance(scene, dict)
+    ]
+    prompt = f"""Complete an incomplete math-video package by generating ONLY the missing Manim scenes.
+
+Title: {title}
+Audience: {audience}
+Additional direction: {extra_instructions or 'none'}
+
+Beats that need scenes (preserve each id, narration, and class_name exactly):
+{missing_json}
+
+Scenes already present (do not regenerate these; avoid duplicating their visual approach):
+{json.dumps(existing_summaries, ensure_ascii=False, indent=2)}
+
+Return a JSON object with a `scenes` array containing exactly one complete scene for each requested beat, in the same order. Each scene must have `id`, `class_name`, `visual_summary`, `steps`, `on_screen_text`, and complete Python `code`. Follow all scene-code requirements. No markdown or extra keys.
+"""
+    response = _create_response_with_retry(
+        model=config.openai.text_model,
+        input=prompt,
+        instructions=(
+            f"{CODEGEN_SYSTEM_PROMPT}\n\n"
+            "For this request, return a JSON object with a 'scenes' array as specified in the user prompt. "
+            "Put each complete Python scene source in that scene object's 'code' field. "
+            "Do not output source code outside the JSON object."
+        ),
+        text={"format": {"type": "json_object"}},
+    )
+    package = _parse_json_loose(response.output_text or "")
+    if not isinstance(package, dict) or not isinstance(package.get("scenes"), list):
+        raise ValueError("Supplemental scene response must contain a 'scenes' array.")
+    scenes = package["scenes"]
+    expected_ids = [beat["id"] for beat in missing_beats]
+    if any(not isinstance(scene, dict) or not isinstance(scene.get("id"), str) for scene in scenes):
+        raise ValueError("Supplemental scene response contains an entry without a string 'id'.")
+    received_ids = [scene["id"] for scene in scenes]
+    if len(received_ids) != len(expected_ids) or set(received_ids) != set(expected_ids):
+        missing_ids = [beat_id for beat_id in expected_ids if beat_id not in received_ids]
+        duplicates = sorted({beat_id for beat_id in received_ids if received_ids.count(beat_id) > 1})
+        unexpected = [beat_id for beat_id in received_ids if beat_id not in expected_ids]
+        raise ValueError(
+            "Supplemental scene response did not match requested beats. "
+            f"Expected IDs: {expected_ids!r}; received IDs: {received_ids!r}; "
+            f"missing: {missing_ids!r}; duplicates: {duplicates!r}; unexpected: {unexpected!r}."
+        )
+    scenes_by_id = {scene["id"]: scene for scene in scenes}
+    for beat in missing_beats:
+        scene = scenes_by_id[beat["id"]]
+        for field in ("class_name", "code"):
+            if not isinstance(scene.get(field), str) or not scene[field].strip():
+                raise ValueError(f"Supplemental scene for beat {beat['id']!r} has invalid '{field}'.")
+        # Keep the pipeline's unique, deterministic class name even if the
+        # model invents a duplicate or forgets the requested class name.
+        scene["class_name"] = beat["class_name"]
+    return scenes
 
 
 def _parse_json_loose(raw: str) -> Any:

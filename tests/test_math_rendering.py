@@ -90,6 +90,46 @@ class MathRenderingTests(unittest.TestCase):
         self.assertIn("radius", [keyword.arg for keyword in sector_call.keywords])
         self.assertNotIn("outer_radius", [keyword.arg for keyword in sector_call.keywords])
 
+    def test_arc_center_mobject_is_converted_but_point_name_is_preserved(self):
+        normalized = normalize_visible_content(
+            "from manim import *\n"
+            "vertex = Dot(ORIGIN)\n"
+            "point = np.array([1, 2, 0])\n"
+            "mark = Arc(arc_center=vertex, angle=1)\n"
+            "other = Arc(arc_center=point, angle=1)\n"
+        )
+        tree = ast.parse(normalized)
+        arc_calls = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "Arc"
+        ]
+        arc_calls.sort(key=lambda call: call.lineno)
+        centers = [next(keyword.value for keyword in call.keywords if keyword.arg == "arc_center") for call in arc_calls]
+        self.assertIsInstance(centers[0], ast.Call)
+        self.assertEqual(centers[0].func.attr, "get_center")
+        self.assertIsInstance(centers[1], ast.Name)
+        self.assertEqual(centers[1].id, "point")
+
+    def test_dot_mobject_argument_is_converted_but_point_arrays_are_preserved(self):
+        normalized = normalize_visible_content(
+            "from manim import *\n"
+            "source = Dot(ORIGIN)\n"
+            "point = np.array([1, 2, 0])\n"
+            "a = Dot(source)\n"
+            "b = Dot(point=source)\n"
+            "c = Dot(point)\n"
+        )
+        tree = ast.parse(normalized)
+        dots = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "Dot"
+        ]
+        dots.sort(key=lambda call: call.lineno)
+        self.assertEqual(dots[1].args[0].func.attr, "get_center")
+        self.assertEqual(next(k.value.func.attr for k in dots[2].keywords if k.arg == "point"), "get_center")
+        self.assertIsInstance(dots[3].args[0], ast.Name)
+        self.assertEqual(dots[3].args[0].id, "point")
+
     def test_get_intersection_calls_use_pipeline_helper(self):
         normalized = normalize_visible_content(
             "from manim import *\np = first.get_intersection(second)\n"

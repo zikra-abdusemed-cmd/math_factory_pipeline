@@ -16,6 +16,29 @@ from pipeline.openai_client import get_client
 from tts_services.wav_utils import ensure_sane_voiceover_wav
 
 
+def _is_retryable_tts_error(exc: Exception) -> bool:
+    """Return whether a failed TTS request is safe to retry."""
+    message = str(exc).upper()
+    return (
+        any(
+            code in message
+            for code in (
+                "408",
+                "409",
+                "429",
+                "500",
+                "502",
+                "503",
+                "504",
+                "522",
+                "TIMEOUT",
+                "TIMED OUT",
+            )
+        )
+        or "OUTSIDE THE ALLOWED RANGE" in message
+    )
+
+
 class OpenAITTSService(SpeechService):
     """SpeechService using ``gpt-4o-mini-tts`` and a built-in OpenAI voice."""
 
@@ -94,10 +117,15 @@ class OpenAITTSService(SpeechService):
             except Exception as exc:
                 full_path.unlink(missing_ok=True)
                 message = str(exc).upper()
-                retryable = any(
-                    code in message for code in ("408", "409", "429", "500", "502", "503", "504", "TIMEOUT")
-                ) or "OUTSIDE THE ALLOWED RANGE" in message
+                cloudflare_timeout = "522" in message and "CLOUDFLARE" in message
+                retryable = _is_retryable_tts_error(exc)
                 if not retryable or attempt == max_attempts - 1:
+                    if cloudflare_timeout:
+                        raise RuntimeError(
+                            f"OpenAI TTS is temporarily unreachable (Cloudflare 522) after "
+                            f"{attempt + 1}/{max_attempts} attempts. Your cached narrations remain "
+                            "available; wait a few minutes and retry."
+                        ) from exc
                     raise RuntimeError(
                         f"OpenAI TTS failed after {attempt + 1}/{max_attempts} attempts. "
                         f"Each attempt is limited to {config.openai.tts_timeout_seconds:g} seconds: {exc}"

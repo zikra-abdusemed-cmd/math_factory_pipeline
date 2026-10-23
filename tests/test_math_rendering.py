@@ -90,6 +90,67 @@ class MathRenderingTests(unittest.TestCase):
         self.assertIn("radius", [keyword.arg for keyword in sector_call.keywords])
         self.assertNotIn("outer_radius", [keyword.arg for keyword in sector_call.keywords])
 
+    def test_riemann_rectangles_colors_is_normalized_for_manim(self):
+        normalized = normalize_visible_content(
+            "from manim import *\nrects = axes.get_riemann_rectangles(graph, colors=[BLUE, GREEN])\n"
+        )
+        tree = ast.parse(normalized)
+        call = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get_riemann_rectangles"
+        )
+        self.assertIn("color", [keyword.arg for keyword in call.keywords])
+        self.assertNotIn("colors", [keyword.arg for keyword in call.keywords])
+
+    def test_transform_methods_drop_unsupported_color_keyword(self):
+        normalized = normalize_visible_content(
+            "from manim import *\n"
+            "shape = Square().scale(2, color=BLUE).shift(RIGHT, color=RED)\n"
+            "shape.rotate(PI / 2, color=GREEN).move_to(ORIGIN, color=YELLOW)\n"
+        )
+        tree = ast.parse(normalized)
+        calls = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"scale", "shift", "rotate", "move_to"}
+        ]
+        self.assertEqual(len(calls), 4)
+        for call in calls:
+            self.assertNotIn("color", [keyword.arg for keyword in call.keywords])
+
+    def test_transform_color_is_applied_to_named_mobject_before_transform(self):
+        normalized = normalize_visible_content(
+            "from manim import *\nshape = Square()\nshape.scale(2, color=BLUE)\n"
+        )
+        tree = ast.parse(normalized)
+        scale_call = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "scale"
+        )
+        self.assertIsInstance(scale_call.func.value, ast.Call)
+        self.assertEqual(scale_call.func.value.func.attr, "set_color")
+
+    def test_undefined_common_color_names_get_supported_fallbacks(self):
+        normalized = normalize_visible_content(
+            "from manim import *\ncolors = [BROWN, VIOLET, PURPLE]\n"
+        )
+        tree = ast.parse(normalized)
+        color_list = next(
+            node.value for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "colors" for target in node.targets)
+        )
+        self.assertEqual(color_list.elts[0].func.id, "ManimColor")
+        self.assertEqual(color_list.elts[0].args[0].value, "#8B4513")
+        self.assertEqual(color_list.elts[1].func.id, "ManimColor")
+        self.assertEqual(color_list.elts[1].args[0].value, "#8A2BE2")
+        self.assertEqual(color_list.elts[2].id, "PURPLE")
+
     def test_arc_center_mobject_is_converted_but_point_name_is_preserved(self):
         normalized = normalize_visible_content(
             "from manim import *\n"

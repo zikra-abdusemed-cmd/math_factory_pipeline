@@ -96,8 +96,20 @@ raw LaTeX, scripts (^ or _), or mathematical source inside Text.
 even if a scene tries Manim's `Tex` constructor.
 - `create_math` accepts one or more positional TeX strings, like MathTex; \
 use separate positional parts only when you need separate alignment/isolation.
+- Do not index into a `create_math(...)` result unless it was constructed \\
+with multiple positional TeX strings. For coloring individual symbols, use \\
+`.set_color_by_tex(r"...", COLOR)` instead of assuming `mobject[1]` exists.
 - Common scalar functions from Python's math module and NumPy (`np`) are \
 available in generated scenes; use `np` for arrays and vectorized graph functions.
+- For `Axes.get_riemann_rectangles(...)`, use the singular `color=` argument; \
+`colors=` is not supported by Manim Community Edition.
+- Transform methods such as `.scale()`, `.shift()`, `.rotate()`, and `.move_to()` \
+do not accept styling arguments such as `color=`. Set colors on the mobject \
+constructor or with `.set_color(...)` before applying transforms.
+- Use Manim's defined color constants such as RED, BLUE, GREEN, YELLOW, \\
+ORANGE, PURPLE, PINK, TEAL, GOLD, WHITE, and GREY. `BROWN` and `VIOLET` are \\
+not defined in this Manim version; use `ManimColor("#8B4513")` or \\
+`ManimColor("#8A2BE2")` for those hues.
 - For a filled circular wedge, call `Sector(radius=..., start_angle=..., \
 angle=...)`; use `AnnularSector(inner_radius=..., outer_radius=...)` for a ring wedge.
 - For crossing line segments use `pipeline_line_intersection(line_a, line_b)`; \
@@ -309,6 +321,27 @@ class _UniversalTextTransformer(ast.NodeTransformer):
                 for keyword in node.keywords:
                     if keyword.arg == "outer_radius":
                         keyword.arg = "radius"
+        if func_name == "get_riemann_rectangles":
+            # Manim Community Edition accepts `color`, not `colors`.
+            for keyword in node.keywords:
+                if keyword.arg == "colors":
+                    keyword.arg = "color"
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"scale", "shift", "rotate", "move_to", "next_to", "to_edge", "to_corner"}
+        ):
+            # Styling belongs to the Mobject, not to its geometry/placement methods.
+            color_keywords = [keyword for keyword in node.keywords if keyword.arg == "color"]
+            node.keywords = [keyword for keyword in node.keywords if keyword.arg != "color"]
+            if color_keywords and isinstance(node.func.value, ast.Name):
+                receiver = node.func.value
+                if receiver.id in self.mobject_names:
+                    set_color = ast.Call(
+                        func=ast.Attribute(value=receiver, attr="set_color", ctx=ast.Load()),
+                        args=[color_keywords[-1].value],
+                        keywords=[],
+                    )
+                    node.func.value = set_color
         elif func_name == "Arc":
             dimension_keywords = {keyword.arg for keyword in node.keywords}
             if dimension_keywords & {"width", "height"}:
@@ -366,6 +399,21 @@ class _UniversalTextTransformer(ast.NodeTransformer):
             first_line = node.func.value
             node.func = ast.Name(id="pipeline_line_intersection", ctx=ast.Load())
             node.args.insert(0, first_line)
+        return node
+
+    def visit_Name(self, node: ast.Name) -> ast.AST:
+        # These color names are common in generated palettes but are not
+        # exported by Manim CE 0.22. Keep the intended hues using hex colors.
+        fallback_colors = {
+            "BROWN": "#8B4513",
+            "VIOLET": "#8A2BE2",
+        }
+        if isinstance(node.ctx, ast.Load) and node.id in fallback_colors:
+            return ast.Call(
+                func=ast.Name(id="ManimColor", ctx=ast.Load()),
+                args=[ast.Constant(value=fallback_colors[node.id])],
+                keywords=[],
+            )
         return node
 
     def visit_Constant(self, node: ast.Constant) -> ast.AST:

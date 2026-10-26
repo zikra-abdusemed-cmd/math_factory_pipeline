@@ -129,10 +129,10 @@ Generated scenes render notation with Manim `MathTex` via
 `pipeline/math_rendering.py`, which needs `latex` and `dvisvgm` on `PATH`.
 
 The pipeline does **not** require the `standalone` LaTeX package: it installs
-a custom TeX template based on `article` + `amsmath`/`amssymb`, which even
-minimal distributions include. A smoke test runs before codegen; if MathTex
-cannot compile, generation stops with a clear error instead of showing raw
-LaTeX through `Text`.
+a custom TeX template based on `article`, `amsmath`, `amssymb`, and `xcolor`,
+which supports colored formulas and matrix entries. A smoke test runs before
+codegen; if MathTex cannot compile, generation stops with a clear error
+instead of showing raw LaTeX through `Text`.
 
 **macOS** — BasicTeX (~100 MB) is enough; MacTeX (~5 GB) also works:
 

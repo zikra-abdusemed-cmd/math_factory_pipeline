@@ -235,6 +235,24 @@ x = Tex("\xi + \underbrace{a}_{b}")
         self.assertEqual(len(mob), 2)
         self.assertGreater(mob.width, 0)
 
+    def test_create_math_normalizes_percentages_and_unicode_dashes(self):
+        ensure_pipeline_tex_template()
+        mob = create_math(r"\mathrm{0–600}\,0%", font_size=24)
+        self.assertGreater(mob.width, 0)
+
+    def test_create_math_preserves_escaped_percentage(self):
+        ensure_pipeline_tex_template()
+        mob = create_math(
+            r"\text{gradient}=\frac{\text{rise}}{\text{run}}\times100\%",
+            font_size=24,
+        )
+        self.assertGreater(mob.width, 0)
+
+    def test_create_math_normalizes_unicode_math_symbols(self):
+        ensure_pipeline_tex_template()
+        mob = create_math("years ≈ 72 ÷ rate", font_size=24)
+        self.assertGreater(mob.width, 0)
+
     def test_future_import_stays_first(self):
         normalized = normalize_visible_content(
             '"""scene"""\nfrom __future__ import annotations\nfrom manim import *\nx = Text("x^2")\n'

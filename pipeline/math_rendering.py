@@ -99,6 +99,21 @@ def pipeline_tex_template() -> TexTemplate:
 \usepackage[english]{babel}
 \usepackage{amsmath}
 \usepackage{amssymb}
+\usepackage[dvipsnames]{xcolor}
+% Keep Manim-style uppercase color names usable inside generated MathTex.
+\colorlet{RED}{red}
+\colorlet{BLUE}{blue}
+\colorlet{GREEN}{green}
+\colorlet{YELLOW}{yellow}
+\colorlet{ORANGE}{orange}
+\colorlet{PURPLE}{purple}
+\colorlet{PINK}{magenta}
+\colorlet{TEAL}{cyan}
+\colorlet{GOLD}{Goldenrod}
+\colorlet{GREY}{gray}
+\colorlet{GRAY}{gray}
+\colorlet{WHITE}{white}
+\colorlet{BLACK}{black}
 \pagestyle{empty}
 \setlength{\textwidth}{20cm}
 \setlength{\textheight}{20cm}
@@ -277,7 +292,7 @@ def create_math(value: str, *parts: str, **kwargs: Any):
     for part in values:
         if not isinstance(part, str):
             raise TypeError(f"mathematical content must be str, got {type(part).__name__}")
-    sources = [_strip_math_delimiters(part) for part in values]
+    sources = [_sanitize_tex_source(_strip_math_delimiters(part)) for part in values]
     if any(not source.strip() for source in sources):
         raise ValueError("mathematical content cannot be empty")
     template = ensure_pipeline_tex_template()
@@ -293,6 +308,39 @@ def create_math(value: str, *parts: str, **kwargs: Any):
             f"{value!r}. The pipeline will not fall back to Text()/raw LaTeX. "
             f"Underlying error: {exc}"
         ) from exc
+
+
+def _sanitize_tex_source(source: str) -> str:
+    """Normalize common plain-text characters that are invalid in TeX math."""
+    replacements = {
+        "–": "-",
+        "—": "-",
+        "−": "-",
+        "≈": r"\approx ",
+        "≠": r"\ne ",
+        "≤": r"\le ",
+        "≥": r"\ge ",
+        "÷": r"\div ",
+        "×": r"\times ",
+        "±": r"\pm ",
+        "∓": r"\mp ",
+        "∞": r"\infty ",
+        "→": r"\to ",
+        "↦": r"\mapsto ",
+        "∈": r"\in ",
+        "∉": r"\notin ",
+        "∪": r"\cup ",
+        "∩": r"\cap ",
+        "⊂": r"\subset ",
+        "⊆": r"\subseteq ",
+        "√": r"\sqrt{}",
+    }
+    for character, tex in replacements.items():
+        source = source.replace(character, tex)
+    # Generated labels frequently include percentages such as ``10%``. In
+    # TeX, an unescaped percent starts a comment and can invalidate the rest
+    # of the expression. Preserve percent signs that are already escaped.
+    return re.sub(r"(?<!\\)%", r"\%", source)
 
 
 def create_mixed_content(value: str, **kwargs: Any):

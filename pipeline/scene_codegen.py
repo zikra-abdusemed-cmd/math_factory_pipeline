@@ -37,6 +37,28 @@ Hard requirements for every scene you write:
 - `from manim import *`
 - `from manim_voiceover import VoiceoverScene`
 - `from tts_services.active_service import get_speech_service`
+- Cinematic 2D scenes may subclass `MovingCameraScene`; 3D scenes may subclass
+  `ThreeDScene`. The pipeline normalizes voiceover scenes to synced variants.
+- Name each declared visual_plan object id as the Python variable for that
+  mobject. The pipeline registers those names with CameraController.
+- If visual_plan.camera is non-empty, subclass MovingCameraScene (2D) or
+  ThreeDScene (3D). Do not write custom camera updaters, frame.animate chains,
+  or extra camera plays; the pipeline injects CameraController and executes
+  the validated shot list. Do not animate camera.frame yourself.
+- Request camera tracking only when a moving subject would leave a readable
+  static frame. Prefer a still composition for equations, graphs, and recaps.
+  Never combine unrelated pans, zooms, and orbits in one shot.
+- Physical trajectories must use pipeline.physics samples with
+  `animate_physical(...)` or `rate_func=linear` on a ValueTracker. Do not
+  apply smooth/ease camera rate functions to the object's path.
+- For planned camera operations, import helpers from `pipeline.cinematic` only
+  if you call them, and use only operations and targets in the validated plan.
+  Keep movement purposeful, bounded, and synchronized inside the voiceover block.
+- Keep labels, equations, and diagrams from overlapping. Place titles in the
+  top band and secondary equations to the right or below the demonstration.
+  Do not park explanatory text on top of a moving particle or its trail.
+- Derive physical values from pipeline.physics when applicable; never invent
+  unsupported parameters.
 - Exactly one class, subclassing VoiceoverScene, named EXACTLY the class \
 name you are given.
 - In construct(), the FIRST line must be: \
@@ -55,6 +77,9 @@ Do NOT precompute `step = tracker.duration / n` and reuse it for every play \
 (that overshoots after frame rounding). Underfilling is fine — VoiceoverScene \
 waits for the audio to finish. If there is no animation, use \
 `self.wait(tracker.duration)`.
+- Optional camera movement must only implement declared visual_plan operations.
+  Account for each event's narration-relative start and duration inside the
+  voiceover; do not just play every camera event at full duration sequentially.
 - Keep scenes computationally light: prefer FadeIn/FadeOut/Create over Write \
 for multi-word Text (Write is expensive). Avoid dense NumberPlane grids, \
 hundreds of mobjects, updaters, and nested VGroups larger than ~20 items. \
@@ -131,8 +156,11 @@ is a Mobject.
 `r"\\frac{a}{b}"`) or escape every backslash. Ordinary strings interpret \
 sequences such as `\\f` and `\\t` before MathTex receives them.
 - Keep every on-screen element within the default frame (do not manually \
-change camera/frame size). Clean up each visual beat with FadeOut before \
-introducing an unrelated one so the screen doesn't get cluttered.
+change camera/frame size). The pipeline runs compose_named_mobjects before \
+the voiceover; still choose readable initial positions. Clean up each visual \
+beat with FadeOut before introducing an unrelated one so the screen doesn't \
+get cluttered. When a diagram, equation, and motion cannot fit, use sequential \
+shots instead of shrinking everything.
 - No print(), no input(), no network calls, no file I/O other than what \
 manim/manim-voiceover already do internally.
 - Output ONLY the Python source code. No markdown fences, no commentary, \
@@ -150,6 +178,8 @@ Storyboard for this beat:
 - Steps:
 {steps_block}
 - On-screen text/equations to include somewhere: {on_screen_text}
+- Validated visual-director plan (empty means keep a clear static composition):
+{visual_plan}
 
 Write the complete Python file now.
 """
@@ -188,6 +218,243 @@ def _strip_code_fences(code: str) -> str:
             lines = lines[:-1]
         code = "\n".join(lines)
     return code.strip() + "\n"
+
+
+def _find_voiceover_with(construct: ast.FunctionDef) -> ast.With | ast.AsyncWith | None:
+    for node in construct.body:
+        if isinstance(node, (ast.With, ast.AsyncWith)) and any(
+            isinstance(item.context_expr, ast.Call)
+            and isinstance(item.context_expr.func, ast.Attribute)
+            and item.context_expr.func.attr == "voiceover"
+            for item in node.items
+        ):
+            return node
+    for node in ast.walk(construct):
+        if isinstance(node, (ast.With, ast.AsyncWith)) and any(
+            isinstance(item.context_expr, ast.Call)
+            and isinstance(item.context_expr.func, ast.Attribute)
+            and item.context_expr.func.attr == "voiceover"
+            for item in node.items
+        ):
+            return node
+    return None
+
+
+def _is_camera_frame_root(node: ast.AST) -> bool:
+    """True for the bare ``self.camera.frame`` attribute chain."""
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "frame"
+        and isinstance(node.value, ast.Attribute)
+        and node.value.attr == "camera"
+        and isinstance(node.value.value, ast.Name)
+        and node.value.value.id == "self"
+    )
+
+
+def _is_camera_frame_expr(node: ast.AST) -> bool:
+    """True for ``self.camera.frame`` and any ``.animate...`` / method chain on it."""
+    if _is_camera_frame_root(node):
+        return True
+    if isinstance(node, ast.Attribute):
+        return _is_camera_frame_expr(node.value)
+    if isinstance(node, ast.Call):
+        return _is_camera_frame_expr(node.func)
+    return False
+
+
+def _strip_conflicting_camera_ops(voiceover: ast.With | ast.AsyncWith) -> None:
+    """Remove generated camera.frame.animate / UpdateFromFunc(frame) fights.
+
+    Only CameraController may mutate the 2D frame during a planned shot.
+    """
+    cleaned: list[ast.stmt] = []
+    for statement in voiceover.body:
+        if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call):
+            call = statement.value
+            if (
+                isinstance(call.func, ast.Attribute)
+                and isinstance(call.func.value, ast.Name)
+                and call.func.value.id == "self"
+                and call.func.attr == "play"
+            ):
+                kept_args = []
+                for arg in call.args:
+                    if _is_camera_frame_expr(arg):
+                        continue
+                    if (
+                        isinstance(arg, ast.Call)
+                        and isinstance(arg.func, ast.Name)
+                        and arg.func.id in {"UpdateFromFunc", "UpdateFromAlphaFunc"}
+                        and arg.args
+                        and _is_camera_frame_expr(arg.args[0])
+                    ):
+                        continue
+                    kept_args.append(arg)
+                if not kept_args:
+                    continue
+                call.args = kept_args
+        cleaned.append(statement)
+    voiceover.body = cleaned
+
+
+def _resolve_declared_targets(construct: ast.FunctionDef, visual_plan: Any) -> dict[str, str]:
+    declared_names = {
+        node.id for node in ast.walk(construct)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+    }
+    by_normalized_name = {name.replace("_", "").lower(): name for name in declared_names}
+    target_names: dict[str, str] = {}
+    for obj in getattr(visual_plan, "objects", ()):
+        object_id = obj.get("id", "")
+        candidate = object_id if object_id in declared_names else by_normalized_name.get(object_id.replace("_", "").lower())
+        if candidate:
+            target_names[object_id] = candidate
+    for object_id in (
+        getattr(visual_plan, "main_subject", ""),
+        *getattr(visual_plan, "secondary", ()),
+        *getattr(visual_plan, "keep_readable", ()),
+    ):
+        if not object_id or object_id in target_names:
+            continue
+        candidate = object_id if object_id in declared_names else by_normalized_name.get(object_id.replace("_", "").lower())
+        if candidate:
+            target_names[object_id] = candidate
+    for event in getattr(visual_plan, "camera", ()):
+        object_id = getattr(event, "target", None)
+        if not object_id or object_id in target_names:
+            continue
+        candidate = object_id if object_id in declared_names else by_normalized_name.get(object_id.replace("_", "").lower())
+        if candidate:
+            target_names[object_id] = candidate
+    return target_names
+
+
+def inject_camera_plan(code: str, visual_plan: Any) -> str:
+    """Inject CameraController, layout composition, and strip conflicting frame ops.
+
+    The package model often forgets camera helpers or writes competing
+    ``camera.frame.animate`` calls. One controller owns the frame; layout runs
+    after mobjects exist and before narration timing starts.
+    """
+    tree = ast.parse(_rawify_invalid_tex_strings(code))
+    classes = [node for node in tree.body if isinstance(node, ast.ClassDef)]
+    if len(classes) != 1:
+        return code
+    scene_class = classes[0]
+    construct = next((node for node in scene_class.body if isinstance(node, ast.FunctionDef) and node.name == "construct"), None)
+    if construct is None:
+        return code
+    voiceover = _find_voiceover_with(construct)
+    if voiceover is None:
+        return code
+
+    _strip_conflicting_camera_ops(voiceover)
+
+    target_names = _resolve_declared_targets(construct, visual_plan) if visual_plan else {}
+    camera_events = list(getattr(visual_plan, "camera", ()) or ()) if visual_plan else []
+    usable_events: list[Any] = []
+    for event in camera_events:
+        if event.command in {"push_in", "pan_to", "follow_object"} and event.target not in target_names:
+            continue
+        if event.command == "orbit_scene" and getattr(visual_plan, "mode", "2d") != "3d":
+            continue
+        usable_events.append(event)
+
+    needs_moving_camera = bool(usable_events) and any(
+        event.command in {"push_in", "pull_back", "pan_to", "follow_object", "transition_to_graph", "freeze_and_annotate"}
+        for event in usable_events
+    )
+    moving_camera_bases = {"MovingCameraScene", "SyncedMovingCameraVoiceoverScene"}
+    three_d_bases = {"ThreeDScene", "SyncedThreeDVoiceoverScene"}
+    if needs_moving_camera and not any(isinstance(base, ast.Name) and base.id in moving_camera_bases for base in scene_class.bases):
+        scene_class.bases.append(ast.Name(id="MovingCameraScene", ctx=ast.Load()))
+    if visual_plan and getattr(visual_plan, "mode", "2d") == "3d" and any(event.command == "orbit_scene" for event in usable_events):
+        if not any(isinstance(base, ast.Name) and base.id in three_d_bases for base in scene_class.bases):
+            scene_class.bases.append(ast.Name(id="ThreeDScene", ctx=ast.Load()))
+
+    # Composition pass: reposition independent labels before the voiceover clock.
+    # Namespace keys are Python variable names, not visual-plan object ids.
+    readable_vars = [target_names[i] for i in (getattr(visual_plan, "keep_readable", ()) or ()) if i in target_names] if visual_plan else []
+    title_vars = [
+        var for name, var in target_names.items()
+        if name.lower() in {"title", "heading", "observation"} or var.lower() in {"title", "heading", "observation"}
+    ]
+    equation_vars = [
+        var for name, var in target_names.items()
+        if "equation" in name.lower() or "formula" in name.lower() or var.lower() in {"equation", "formula", "eq"}
+    ]
+    locked_vars = []
+    if visual_plan:
+        main = getattr(visual_plan, "main_subject", "") or ""
+        secondary = set(getattr(visual_plan, "secondary", ()) or ())
+        for object_id, var in target_names.items():
+            if object_id == main or object_id in secondary:
+                locked_vars.append(var)
+    # Avoid double-injecting layout on rewrites.
+    already_layout = any(
+        isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "_pipeline_layout" for t in getattr(node, "targets", []))
+        for node in construct.body
+    )
+    layout_source = (
+        "_pipeline_layout = compose_named_mobjects(\n"
+        "    self,\n"
+        "    {name: value for name, value in locals().items() if not str(name).startswith('_')},\n"
+        f"    locked_ids={locked_vars!r},\n"
+        f"    readable_ids={readable_vars!r},\n"
+        f"    title_ids={title_vars!r},\n"
+        f"    equation_ids={equation_vars!r},\n"
+        ")\n"
+        "_pipeline_qc = validate_scene_composition(\n"
+        "    self,\n"
+        "    {name: value for name, value in locals().items() if not str(name).startswith('_')},\n"
+        ")\n"
+    )
+    # Insert layout immediately before the voiceover block inside construct.
+    voiceover_index = next(
+        (index for index, node in enumerate(construct.body) if node is voiceover),
+        None,
+    )
+    if voiceover_index is not None and not already_layout:
+        construct.body[voiceover_index:voiceover_index] = ast.parse(layout_source).body
+        # Re-find voiceover after insertion (same object still valid).
+
+    if usable_events and needs_moving_camera:
+        register_lines = ["_camera_controller = CameraController.ensure(self)"]
+        for object_id, var_name in target_names.items():
+            register_lines.append(f"_camera_controller.register({object_id!r}, {var_name})")
+        plan_items = []
+        for event in usable_events:
+            plan_items.append(
+                "{"
+                f"'command': {event.command!r}, "
+                f"'target': {event.target!r}, "
+                f"'start': {float(event.start)!r}, "
+                f"'duration': {float(event.duration)!r}, "
+                f"'reason': {getattr(event, 'reason', '')!r}"
+                "}"
+            )
+        register_lines.append(f"_camera_controller.set_plan([{', '.join(plan_items)}])")
+        register_lines.append("_camera_controller.attach()")
+        register_lines.append("_camera_controller.bind_tracker(tracker)")
+        teardown = [
+            "_camera_controller.finish()",
+            "validate_scene_composition(self, {name: value for name, value in locals().items() if not str(name).startswith('_')}, controller=_camera_controller)",
+        ]
+        # Avoid double-injection when re-running inject on already rewritten code.
+        already = any(
+            isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "_camera_controller" for t in node.targets)
+            for node in voiceover.body
+            if isinstance(node, ast.Assign)
+        )
+        if not already:
+            voiceover.body[0:0] = ast.parse("\n".join(register_lines)).body
+            voiceover.body.extend(ast.parse("\n".join(teardown)).body)
+
+    ast.fix_missing_locations(tree)
+    return ast.unparse(tree) + "\n"
 
 
 def _rawify_invalid_tex_strings(code: str) -> str:
@@ -296,11 +563,9 @@ class _UniversalTextTransformer(ast.NodeTransformer):
         func_name: str | None = None
         if isinstance(node.func, ast.Name):
             func_name = node.func.id
-        elif (
-            isinstance(node.func, ast.Attribute)
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "manim"
-        ):
+        elif isinstance(node.func, ast.Attribute):
+            # Manim APIs such as axes.get_riemann_rectangles are called as
+            # attributes on scene objects, not as module-level functions.
             func_name = node.func.attr
 
         if func_name == "Text":
@@ -452,12 +717,18 @@ class _UniversalTextTransformer(ast.NodeTransformer):
             isinstance(base, ast.Name) and base.id == "ThreeDScene"
             for base in node.bases
         )
+        uses_moving_camera = any(
+            isinstance(base, ast.Name) and base.id == "MovingCameraScene"
+            for base in node.bases
+        )
         for base in node.bases:
-            if isinstance(base, ast.Name) and base.id == "ThreeDScene":
+            if isinstance(base, ast.Name) and base.id in {"ThreeDScene", "MovingCameraScene"}:
                 continue
-            if isinstance(base, ast.Name) and base.id == "VoiceoverScene":
+            if isinstance(base, ast.Name) and base.id in {"VoiceoverScene", "SyncedVoiceoverScene"}:
                 if uses_3d_scene:
                     new_bases.append(ast.Name(id="SyncedThreeDVoiceoverScene", ctx=ast.Load()))
+                elif uses_moving_camera:
+                    new_bases.append(ast.Name(id="SyncedMovingCameraVoiceoverScene", ctx=ast.Load()))
                 else:
                     new_bases.append(ast.Name(id="SyncedVoiceoverScene", ctx=ast.Load()))
             else:
@@ -493,8 +764,13 @@ def normalize_visible_content(code: str) -> str:
 
     helpers = ast.parse(
         "from pipeline.math_rendering import create_content, create_math, ensure_pipeline_tex_template, line_intersection as pipeline_line_intersection\n"
-        "from pipeline.voiceover_sync import SyncedThreeDVoiceoverScene, SyncedVoiceoverScene\n"
+        "from pipeline.voiceover_sync import SyncedVoiceoverScene\n"
+        "from pipeline.voiceover_sync import SyncedThreeDVoiceoverScene, SyncedMovingCameraVoiceoverScene\n"
         "from pipeline.manim_compat import arc_with_dimensions as pipeline_arc\n"
+        "from pipeline.cinematic import push_in, pull_back, pan_to, follow_object, orbit_scene, freeze_and_annotate, reveal_system, transition_to_graph, trajectory_trail, vector_arrow, acceleration_arrow, trajectory_graph, CameraController, animate_physical, MOTION_PROFILES\n"
+        "from pipeline.layout import compose_named_mobjects\n"
+        "from pipeline.visual_qc import validate_scene_composition\n"
+        "from pipeline.physics import Projectile\n"
         # Make the standard scalar math vocabulary available even when a
         # generated scene forgets to import it explicitly. `np` is exported
         # by Manim's wildcard import; keep numpy as the preferred API in the
@@ -588,10 +864,12 @@ def generate_scene_code(
         visual_summary=storyboard.visual_summary,
         steps_block=steps_block,
         on_screen_text=storyboard.on_screen_text or "none",
+        visual_plan=storyboard.visual_plan or "none",
     )
 
     code = generate_text(user_prompt, system_instruction=CODEGEN_SYSTEM_PROMPT, temperature=0.6)
-    code = normalize_visible_content(_strip_code_fences(code))
+    code = inject_camera_plan(_strip_code_fences(code), storyboard.visual_plan)
+    code = normalize_visible_content(code)
 
     scenes_dir.mkdir(parents=True, exist_ok=True)
     module_stem = f"scene_{beat.id}"
@@ -611,7 +889,8 @@ def generate_scene_code(
             break
         fix_prompt = CODEGEN_FIX_PROMPT.format(previous_code=code, error=error)
         code = generate_text(fix_prompt, system_instruction=CODEGEN_SYSTEM_PROMPT, temperature=0.4)
-        code = normalize_visible_content(_strip_code_fences(code))
+        code = inject_camera_plan(_strip_code_fences(code), storyboard.visual_plan)
+        code = normalize_visible_content(code)
         file_path.write_text(code, encoding="utf-8")
 
     # Clean up the throwaway low-quality preview media either way.

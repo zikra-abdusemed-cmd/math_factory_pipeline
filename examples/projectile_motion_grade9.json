@@ -1,0 +1,14 @@
+{
+  "title": "Projectile Motion: Why the Path Curves",
+  "audience": "Grade 9 students",
+  "assumptions": ["constant gravitational acceleration g=9.81 m/s^2", "negligible air resistance"],
+  "projectile": {"x0": 0, "y0": 0, "speed": 12, "angle_degrees": 45, "gravity": 9.81},
+  "teaching_arc": ["hook", "observe", "intuition", "explain", "formalize", "demonstrate", "reinforce", "recap"],
+  "camera_sequence": [
+    {"command": "push_in", "target": "launcher", "duration": 1.1, "reason": "focus attention before launch"},
+    {"command": "follow_object", "target": "projectile", "duration": 2.5, "reason": "keep the motion legible"},
+    {"command": "freeze_and_annotate", "target": "projectile", "duration": 1.0, "reason": "explain horizontal velocity and downward gravity"},
+    {"command": "transition_to_graph", "target": "trajectory", "duration": 1.2, "reason": "connect observed path to x-y data"}
+  ],
+  "note": "Reference lesson specification for the existing package workflow. Use `python main.py \"Projectile Motion: Why the Path Curves\" --description \"Grade 9. Use the reference lesson: launch speed 12 m/s at 45 degrees, g=9.81 m/s^2, negligible air resistance. Show the observed path, velocity and gravity vectors, then transition to the trajectory graph and reveal x(t)=x0+v0 cos(theta)t and y(t)=y0+v0 sin(theta)t-1/2 gt^2 progressively. Include one numerical example and recap the original question.\"`."
+}

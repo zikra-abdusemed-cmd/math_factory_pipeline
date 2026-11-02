@@ -14,9 +14,12 @@ from dataclasses import dataclass
 
 from pipeline.openai_client import generate_json
 from pipeline.script_gen import Script
+from pipeline.visual_plan import VisualPlan, validate_visual_plan
 
 STORYBOARD_SYSTEM_PROMPT = """You are a Manim (Community Edition) storyboard \
 artist who plans math explainer visuals in the style of 3Blue1Brown.
+
+Prioritize visual clarity and stable composition over cinematic complexity.
 
 For each narration beat you are given, design a visual plan that:
 - Uses only things Manim can actually draw: shapes (Circle, Square, Dot, \
@@ -28,6 +31,28 @@ in the same order the narration would naturally reveal them.
 - Never invents external images, icons, logos, or video/audio assets -- \
 everything must be drawable with Manim's own primitives.
 - Stays visually simple enough to render in well under a minute of scene time.
+- For physics topics, show observation before equations, then build diagrams,
+  equations, worked examples and recaps only as narration warrants.
+- Change composition when the teaching objective changes, not decoratively.
+- Keep object IDs, colors and coordinate systems consistent; never invent
+  physical parameters or assumptions.
+- Name the main_subject, secondary objects, keep_readable elements, and any
+  intentional_overlaps (for example "velocity+ball"). Keep simultaneously
+  visible explanatory elements manageable; prefer sequential shots when a
+  diagram, equation, and motion cannot coexist clearly.
+- Use only supported camera commands: push_in, pull_back, pan_to,
+  follow_object, orbit_scene, freeze_and_annotate, transition_to_graph.
+- Request camera tracking only when a moving subject would leave a readable
+  static frame. Prefer a still composition for equations, graphs, and recaps.
+  Never combine unrelated pans, zooms, and orbits in one shot. Do not add
+  camera motion merely because the lesson is about physics.
+- Camera/event times are narration-relative seconds and fit the estimated
+  beat duration. Targets name declared objects; orbit_scene requires mode=3d.
+- Declare every target ID used by camera events, visual events, and narration
+  cues in the scene's objects list, using the same spelling.
+- When tracking is warranted, plan one restrained push_in, one follow_object
+  on the declared subject, then pull_back or transition_to_graph. Leave
+  camera empty for genuinely static scenes.
 """
 
 STORYBOARD_USER_PROMPT = """Video title: "{title}"
@@ -46,7 +71,24 @@ Return STRICT JSON with this exact shape:
         "short imperative description of sub-step 1, e.g. 'Draw a unit circle centered at the origin'",
         "short imperative description of sub-step 2"
       ],
-      "on_screen_text": ["any short labels/equations that should appear as text/MathTex, or [] if none"]
+      "on_screen_text": ["any short labels/equations that should appear as text/MathTex, or [] if none"],
+      "visual_plan": {{
+        "objective": "scene learning objective",
+        "learning_purpose": "why this composition helps",
+        "theme": "dark",
+        "mode": "2d",
+        "duration": 20,
+        "objects": [{{"id": "stable_id", "kind": "Manim primitive", "initial_state": "brief description"}}],
+        "camera": [{{"command": "push_in", "target": "stable_id", "start": 0, "duration": 1, "reason": "instructional purpose"}}],
+        "events": [{{"at": 2, "kind": "reveal", "target": "stable_id"}}],
+        "narration_cues": [{{"at": 2, "cue": "important spoken moment"}}],
+        "assumptions": [],
+        "parameters": {{}},
+        "main_subject": "stable_id",
+        "secondary": [],
+        "keep_readable": [],
+        "intentional_overlaps": []
+      }}
     }}
   ]
 }}
@@ -64,6 +106,7 @@ class StoryboardScene:
     visual_summary: str
     steps: list[str]
     on_screen_text: list[str]
+    visual_plan: VisualPlan | None = None
 
 
 def generate_storyboard(script: Script) -> list[StoryboardScene]:
@@ -79,6 +122,7 @@ def generate_storyboard(script: Script) -> list[StoryboardScene]:
             visual_summary=s.get("visual_summary", ""),
             steps=list(s.get("steps", [])),
             on_screen_text=list(s.get("on_screen_text", [])),
+            visual_plan=validate_visual_plan(s.get("visual_plan")),
         )
         for s in data["scenes"]
     ]

@@ -277,6 +277,82 @@ Remove-Item Env:MAX_SCENES
 The final path is printed at the end, e.g.:
 `generated/the-pythagorean-theorem/the-pythagorean-theorem.mp4`
 
+## MyMarian OLX lessons
+
+If you export a course from Studio, the pipeline can read the OLX tree and
+use the authored lesson text as the generation brief. MyMarian Physics Grade 9
+stores the real page content in `static/*.htm` files behind HTML iframes; the
+loader follows those files and skips unit quizzes and interactive tools.
+
+```bash
+python main.py --olx /path/to/course --list
+python main.py --olx /path/to/course --unit chapter_u01 --print-brief
+python main.py --olx /path/to/course --unit chapter_u01
+python main.py --olx /path/to/course --section vert_phy_u01_s05 --quality ql
+```
+
+`--olx` accepts a course directory, `course.xml`, or a `.tar.gz` export.
+`--print-brief` shows the extracted source without calling OpenAI.
+
+## Cinematic physics lessons
+
+The package generator accepts an optional, validated `visual_plan` per scene.
+Plans declare object IDs, a 2D/3D mode, assumptions, timed events and one of
+the supported camera commands: `push_in`, `pull_back`, `pan_to`,
+`follow_object`, `orbit_scene`, `freeze_and_annotate`, and
+`transition_to_graph`. Existing math packages may omit this field; they keep
+their existing static or generated compositions. Plan data is saved in
+`storyboard.json` and passed to scene code generation.
+
+### Layout, tracking, and timing
+
+Visual clarity is enforced in the rendering layer, not only by prompts:
+
+- **`pipeline/layout.py`** measures bounding boxes after mobjects exist and
+  repositions independent labels/equations into safe frame regions. Physics
+  hosts stay locked so intentional overlaps (a vector on a particle) remain.
+  When a beat is still overcrowded, diagnostics request sequential shots.
+- **`pipeline/cinematic.py`** owns 2D camera motion through a single
+  `CameraController` lifecycle (register → attach → one shot strategy →
+  finish). Tracking resolves explicit object IDs, uses look-ahead framing,
+  and never shares the frame with competing `camera.frame.animate` plays
+  (those are stripped during injection). Motion profiles are limited to
+  `camera_smooth`, `camera_linear`, `object_physical`, `reveal_smooth`, and
+  `hold`. Physical trajectories use `animate_physical` / linear simulation
+  time so camera easing cannot warp the path.
+- **`pipeline/visual_qc.py`** validates plans and scene composition, and can
+  inspect sampled preview frames for empty or abrupt cuts.
+- **`inject_camera_plan`** wires the controller, layout pass, and QC into
+  generated scenes. A motion event with an empty camera list receives one
+  restrained push → follow → pull sequence.
+
+Focused regression scenes live in `examples/regression_scenes/` (dense
+annotations, tracking, camera handoff, physical-vs-camera easing, consecutive
+shots). Run them with:
+
+```bash
+python -m unittest tests.test_visual_quality -v
+```
+
+For projectile motion, `pipeline/physics.py` calculates position, velocity,
+impact time and trajectory samples analytically. Its model explicitly assumes
+constant gravity and negligible air resistance; physical seconds are separate
+from video playback time. Scene code should use those calculations as the
+source for motion, vectors and graph coordinates.
+
+Generate the Grade 9 reference lesson with the existing CLI and current
+text model/TTS configuration:
+
+```bash
+python main.py "Projectile Motion: Why the Path Curves" --description "Grade 9. Use the reference lesson: launch speed 12 m/s at 45 degrees, g=9.81 m/s^2, negligible air resistance. Show the observed path, velocity and gravity vectors, then transition to the trajectory graph and reveal x(t)=x0+v0 cos(theta)t and y(t)=y0+v0 sin(theta)t-1/2 gt^2 progressively. Include one numerical example and recap the original question."
+```
+
+The complete reference parameters and suggested visual sequence are in
+`examples/projectile_motion_grade9.json`. The command requests a newly generated
+video; it does not reuse a baked scene or bypass local scene validation.
+The same brief is available as an executable wrapper at
+`python examples/generate_projectile_reference.py`.
+
 ## Local web UI
 
 After completing setup, start the local interface with:

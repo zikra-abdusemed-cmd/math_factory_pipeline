@@ -21,9 +21,10 @@ from slugify import slugify
 import config
 from pipeline.render import render_scene
 from pipeline.concat import concat_videos
-from pipeline.scene_codegen import GeneratedScene, normalize_visible_content, _strip_code_fences, _try_render
+from pipeline.scene_codegen import GeneratedScene, normalize_visible_content, inject_camera_plan, _strip_code_fences, _try_render
 from pipeline.script_gen import Script, ScriptBeat
 from pipeline.storyboard_gen import StoryboardScene
+from pipeline.visual_plan import validate_visual_plan
 from pipeline.openai_client import generate_video_package, generate_missing_video_scenes
 from pipeline.tts_pregen import assert_cached_voiceovers_sane, collect_voiceover_texts, pregenerate_voiceovers
 from pipeline.math_rendering import ensure_math_renderer_available
@@ -152,12 +153,14 @@ def _build_storyboard(script: Script, scenes_by_id: dict[str, dict]) -> list[Sto
         visual_summary = scene.get("visual_summary", "")
         if not isinstance(visual_summary, str):
             visual_summary = ""
+        visual_plan = validate_visual_plan(scene.get("visual_plan"))
         storyboard.append(StoryboardScene(
             id=beat.id,
             class_name=class_name,
             visual_summary=visual_summary,
             steps=steps,
             on_screen_text=on_screen_text,
+            visual_plan=visual_plan,
         ))
         seen_class_names.add(class_name)
     return storyboard
@@ -232,7 +235,7 @@ def run_pipeline(
     print("[2/4] Saving storyboard and scene files from package")
     report("generating_storyboard", scene_total=len(script.beats))
     (run_dir / "storyboard.json").write_text(
-        json.dumps([dataclasses.asdict(s) for s in storyboard], indent=2), encoding="utf-8"
+        json.dumps([dataclasses.asdict(s) for s in storyboard], indent=2, default=lambda value: value.__dict__), encoding="utf-8"
     )
     report("storyboard_generated", scene_total=len(storyboard))
 
@@ -247,7 +250,9 @@ def run_pipeline(
             scene_total=len(storyboard),
             class_name=scene_plan.class_name,
         )
-        code = normalize_visible_content(_strip_code_fences(scenes_by_id[scene_plan.id]["code"]))
+        code = _strip_code_fences(scenes_by_id[scene_plan.id]["code"])
+        code = inject_camera_plan(code, scene_plan.visual_plan)
+        code = normalize_visible_content(code)
         module_stem = f"scene_{scene_plan.id}"
         file_path = scenes_dir / f"{module_stem}.py"
         file_path.write_text(code, encoding="utf-8")

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from manim import ThreeDScene, config
+from manim import MovingCameraScene, ORIGIN, ThreeDScene, config
 from manim_voiceover import VoiceoverScene
 from manim_voiceover.tracker import VoiceoverTracker
 
@@ -69,6 +69,18 @@ class SyncedThreeDVoiceoverScene(ThreeDScene, SyncedVoiceoverScene):
     """ThreeDScene with the same voiceover timing cap as 2D generated scenes."""
 
     pass
+
+
+class SyncedMovingCameraVoiceoverScene(MovingCameraScene, SyncedVoiceoverScene):
+    """MovingCameraScene with voiceover duration caps and a known starting frame."""
+
+    def setup(self) -> None:
+        super().setup()
+        frame = getattr(self.camera, "frame", None)
+        if frame is None:
+            return
+        frame.move_to(ORIGIN)
+        frame.set(width=float(config.frame_width))
 
 
 def play_remaining(

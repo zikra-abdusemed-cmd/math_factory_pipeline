@@ -73,7 +73,10 @@ def _run_job(job_id: str, title: str, prompt: str | None, quality: str | None) -
             job = _jobs[job_id]
             job.status = "error"
             job.stage = "error"
-            job.error = str(exc) or exc.__class__.__name__
+            # Include the exception type because format-specifier errors can
+            # originate from either Python prompt templates or model output.
+            message = str(exc).strip()
+            job.error = f"{exc.__class__.__name__}: {message}" if message else exc.__class__.__name__
         return
 
     with _lock:

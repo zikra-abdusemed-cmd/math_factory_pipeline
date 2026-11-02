@@ -29,6 +29,9 @@ Rules:
 setup and definitions, the core idea worked through step by step, \
 a concrete example, and a memorable takeaway.
 - Be precise about math. Do not state anything mathematically incorrect.
+- For physics, let viewers observe a phenomenon before equations; connect
+  forces, motion and graphs where relevant. Explain variables and assumptions.
+- Do not state unsupported physical parameters.
 - Assume a curious high-school-to-early-college audience with no special background.
 """
 

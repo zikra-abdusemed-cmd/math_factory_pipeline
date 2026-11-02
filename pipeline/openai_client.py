@@ -68,6 +68,7 @@ def generate_video_package(title: str, extra_instructions: str | None = None) ->
     from pipeline.scene_codegen import CODEGEN_SYSTEM_PROMPT
     from pipeline.script_gen import SCRIPT_SYSTEM_PROMPT
     from pipeline.storyboard_gen import STORYBOARD_SYSTEM_PROMPT
+    from pipeline.visual_plan import CAMERA_COMMANDS
 
     words_per_second = 2.5
     target_seconds = config.pipeline.target_seconds_per_beat
@@ -85,8 +86,25 @@ Produce 4 to {max(4, config.pipeline.max_scenes)} narration beats, each around {
 NARRATION RULES:
 {script_rules}
 
-STORYBOARD RULES:
+STORYBOARD AND VISUAL-DIRECTOR RULES:
 {STORYBOARD_SYSTEM_PROMPT}
+Each scene's visual_plan is structured declarative data, never Python. Use
+objective, learning_purpose, short descriptive theme, mode (2d or 3d), duration, objects [{{"id":...,"kind":...,"initial_state":...}}],
+camera [{{"command": supported command, "target": declared object id when required,
+"start": narration-relative seconds, "duration": seconds, "reason": teaching purpose}}],
+events [{{"at": seconds, "kind":..., "target":...}}], narration_cues, assumptions,
+and numeric physics parameters only (for example g, speed, angle_degrees). Put
+theme, physical_motion, easing, and other descriptive flags outside parameters.
+Supported camera commands: {sorted(CAMERA_COMMANDS)}.
+Use orbit_scene only in 3d. Prefer static composition unless tracking clearly helps.
+Set main_subject, secondary, keep_readable, and intentional_overlaps when useful.
+All event times must fit the narration beat.
+Every camera, event, and cue target must exactly match an ID declared in that
+scene's objects array. Declare an object for every named target before using it.
+Use the declared object ID as the Python variable name. Do not animate
+self.camera.frame yourself; the pipeline injects CameraController for planned
+shots. Physical motion must stay linear in simulation time (animate_physical /
+rate_func=linear); never ease the object's trajectory for decoration.
 
 SCENE CODE RULES:
 {CODEGEN_SYSTEM_PROMPT}
@@ -96,7 +114,7 @@ Return one JSON object with this exact shape:
   "title": "...",
   "audience": "...",
   "beats": [{{"id":"b1","beat_title":"...","narration":"..."}}],
-  "scenes": [{{"id":"b1","class_name":"...","visual_summary":"...","steps":["..."],"on_screen_text":[],"code":"complete Python source for this scene"}}]
+  "scenes": [{{"id":"b1","class_name":"...","visual_summary":"...","steps":["..."],"on_screen_text":[],"visual_plan":{{"objective":"...","learning_purpose":"...","theme":"dark","mode":"2d","duration":20,"objects":[],"camera":[],"events":[],"narration_cues":[],"assumptions":[],"parameters":{{}}}},"code":"complete Python source for this scene"}}]
 }}
 
 Return exactly one scene per beat, in the same order, and copy each beat's id exactly into its matching scene's id. Each code value must be a complete standalone Python file satisfying all scene code rules. Escape newlines and quotes as valid JSON. No markdown or extra keys.
@@ -140,7 +158,7 @@ Beats that need scenes (preserve each id, narration, and class_name exactly):
 Scenes already present (do not regenerate these; avoid duplicating their visual approach):
 {json.dumps(existing_summaries, ensure_ascii=False, indent=2)}
 
-Return a JSON object with a `scenes` array containing exactly one complete scene for each requested beat, in the same order. Each scene must have `id`, `class_name`, `visual_summary`, `steps`, `on_screen_text`, and complete Python `code`. Follow all scene-code requirements. No markdown or extra keys.
+Return a JSON object with a `scenes` array containing exactly one complete scene for each requested beat, in the same order. Each scene must have `id`, `class_name`, `visual_summary`, `steps`, `on_screen_text`, optional structured declarative `visual_plan`, and complete Python `code`. Follow all scene-code requirements. No markdown or extra keys.
 """
     response = _create_response_with_retry(
         model=config.openai.text_model,

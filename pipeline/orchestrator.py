@@ -95,7 +95,7 @@ def _prepare_missing_scene_request(
     return retained, missing
 
 
-def _parse_script_beats(raw_beats: list[object]) -> list[ScriptBeat]:
+def _parse_script_beats(raw_beats: list[object], scene_limit: int | None = None) -> list[ScriptBeat]:
     """Validate model-provided beats before indexing or writing artifacts."""
     beats: list[ScriptBeat] = []
     seen_ids: set[str] = set()
@@ -120,7 +120,7 @@ def _parse_script_beats(raw_beats: list[object]) -> list[ScriptBeat]:
         seen_ids.add(beat_id)
     if len(beats) < 1:
         raise ValueError("OpenAI package must include at least one narration beat.")
-    scene_limit = max(4, config.pipeline.max_scenes)
+    scene_limit = max(4, config.pipeline.max_scenes) if scene_limit is None else scene_limit
     if len(beats) > scene_limit:
         raise ValueError(
             f"Video package exceeds the effective scene limit of {scene_limit}; received {len(beats)} beats. "
@@ -168,6 +168,11 @@ def run_pipeline(
     quality: str | None = None,
     extra_instructions: str | None = None,
     on_progress: ProgressCallback | None = None,
+    source_content: str | None = None,
+    min_scenes: int | None = None,
+    max_scenes: int | None = None,
+    duration_guidance: str | None = None,
+    target_seconds_per_beat: float | None = None,
 ) -> Path:
     def report(stage: str, **detail: object) -> None:
         if on_progress:
@@ -184,7 +189,16 @@ def run_pipeline(
     report("generating_script", title=title)
     # Check local TeX before consuming the package-generation API request.
     ensure_math_renderer_available()
-    package = generate_video_package(title, extra_instructions=extra_instructions)
+    scene_limit = max(1, max_scenes if max_scenes is not None else max(4, config.pipeline.max_scenes))
+    package = generate_video_package(
+        title,
+        extra_instructions=extra_instructions,
+        source_content=source_content,
+        min_scenes=min_scenes,
+        max_scenes=scene_limit,
+        duration_guidance=duration_guidance,
+        target_seconds_per_beat=target_seconds_per_beat,
+    )
     if not isinstance(package, dict):
         raise ValueError(f"OpenAI package must be a JSON object, got {type(package).__name__}.")
     raw_beats = package.get("beats")
@@ -196,10 +210,12 @@ def run_pipeline(
         )
     package_title = package.get("title", title)
     package_audience = package.get("audience", "")
+    if isinstance(raw_beats, list) and len(raw_beats) > scene_limit:
+        raise ValueError(f"Video package exceeds the selected scene limit of {scene_limit}; received {len(raw_beats)} beats.")
     script = Script(
         title=package_title if isinstance(package_title, str) and package_title.strip() else title,
         audience=package_audience if isinstance(package_audience, str) else "",
-        beats=_parse_script_beats(raw_beats),
+        beats=_parse_script_beats(raw_beats, scene_limit=scene_limit),
     )
     beat_ids = [beat.id for beat in script.beats]
     if len(raw_scenes) != len(beat_ids):

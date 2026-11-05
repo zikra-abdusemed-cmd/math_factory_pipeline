@@ -1,5 +1,4 @@
 const form = document.querySelector('#generate-form');
-const title = document.querySelector('#title');
 const prompt = document.querySelector('#prompt');
 const button = document.querySelector('#generate-button');
 const statusPanel = document.querySelector('#status-panel');
@@ -15,6 +14,17 @@ const elapsedEl = document.querySelector('#elapsed');
 const stageList = document.querySelector('#stage-list');
 const qualityOptions = document.querySelector('#quality-options');
 const configHint = document.querySelector('#config-hint');
+const olxForm = document.querySelector('#olx-form');
+const olxFile = document.querySelector('#olx-file');
+const olxPreview = document.querySelector('#olx-preview');
+const olxError = document.querySelector('#olx-error');
+const unitSelect = document.querySelector('#unit-select');
+const unitList = document.querySelector('#unit-list');
+const scopeSummary = document.querySelector('#scope-summary');
+const bundleResult = document.querySelector('#bundle-result');
+
+let activeImport = null;
+let activeManifest = null;
 
 const STAGE_COPY = {
   starting: ['Preparing your job…', 4],
@@ -47,7 +57,7 @@ let startedAt = null;
 let elapsedTimer = null;
 
 function show(panel) {
-  [statusPanel, resultPanel, errorPanel].forEach((item) => {
+  [statusPanel, resultPanel, bundleResult, errorPanel].forEach((item) => {
     item.hidden = item !== panel;
   });
 }
@@ -76,16 +86,22 @@ function stopElapsed() {
 
 function unlockForm() {
   button.disabled = false;
-  title.disabled = false;
   prompt.disabled = false;
   qualityOptions.querySelectorAll('input').forEach((input) => { input.disabled = false; });
+  document.querySelector('#generate-course').disabled = false;
+  document.querySelector('#preview-button').disabled = false;
+  olxFile.disabled = false;
+  unitSelect.querySelectorAll('input').forEach((input) => { input.disabled = false; });
 }
 
 function lockForm() {
   button.disabled = true;
-  title.disabled = true;
   prompt.disabled = true;
   qualityOptions.querySelectorAll('input').forEach((input) => { input.disabled = true; });
+  document.querySelector('#generate-course').disabled = true;
+  document.querySelector('#preview-button').disabled = true;
+  olxFile.disabled = true;
+  unitSelect.querySelectorAll('input').forEach((input) => { input.disabled = true; });
 }
 
 function stepState(stage, step) {
@@ -121,6 +137,9 @@ function updateStatus(job) {
   const index = detail.scene_index || 1;
   const total = detail.scene_total || 1;
   statusText.textContent = template.replace('{index}', index).replace('{total}', total);
+  if (detail.unit_total) {
+    statusText.textContent = `Unit ${detail.unit_index || 1} of ${detail.unit_total}: ${detail.unit_title || 'Preparing video'} — ${statusText.textContent}`;
+  }
 
   let progress = baseline;
   if (job.stage.includes('scene_code') && detail.scene_total) {
@@ -135,6 +154,7 @@ function updateStatus(job) {
   if (detail.class_name) bits.push(detail.class_name);
   if (detail.quality) bits.push(`quality ${detail.quality}`);
   if (detail.count != null) bits.push(`${detail.count} narrations`);
+  if (detail.unit_total) bits.push(`course unit ${detail.unit_index || 1}/${detail.unit_total}`);
   statusDetail.textContent = bits.join(' · ');
   renderStageList(job.stage, detail);
 }
@@ -153,15 +173,35 @@ async function poll(jobId) {
       progressBar.style.width = '100%';
       renderStageList('done', job.detail || {});
       stopElapsed();
-      video.src = job.video_url;
-      download.href = job.video_url;
-      show(resultPanel);
+      if (job.download_name?.endsWith('.zip')) {
+        document.querySelector('#bundle-download').href = job.video_url;
+        document.querySelector('#bundle-summary').textContent = `${job.detail?.unit_total || 0} unit videos, with course order and titles in the manifest.`;
+        show(bundleResult);
+      } else {
+        video.src = job.video_url;
+        download.href = job.video_url;
+        show(resultPanel);
+      }
       unlockForm();
       return;
     }
     if (job.status === 'error') {
       stopElapsed();
-      errorText.textContent = job.error || 'Video generation failed.';
+      errorText.textContent = job.partial_url
+        ? `${job.error || 'Course generation failed.'} Completed unit videos are available in a partial ZIP.`
+        : (job.error || 'Video generation failed.');
+      if (job.partial_url) {
+        let partial = document.querySelector('#partial-download');
+        if (!partial) {
+          partial = document.createElement('a');
+          partial.id = 'partial-download';
+          partial.className = 'download';
+          partial.textContent = 'Download completed unit videos';
+          partial.download = true;
+          errorPanel.append(partial);
+        }
+        partial.href = job.partial_url;
+      }
       show(errorPanel);
       unlockForm();
       return;
@@ -182,7 +222,81 @@ function resetToForm() {
   video.removeAttribute('src');
   video.load();
   show(null);
-  title.focus();
+  prompt.focus();
+}
+
+function fillSelect(select, entries) {
+  select.innerHTML = entries.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.title)}</option>`).join('');
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[character]);
+}
+
+function selectedScopeUnits() {
+  if (!activeManifest) return [];
+  return [...unitSelect.querySelectorAll('.lesson-choice-input:checked')].flatMap((lessonInput) => {
+    const section = activeManifest.sections.find((item) => item.id === lessonInput.dataset.sectionId);
+    const subsection = section?.subsections.find((item) => item.id === lessonInput.dataset.subsectionId);
+    const unit = subsection?.units.find((item) => item.id === lessonInput.value);
+    return section && subsection && unit ? [{ section, subsection, unit, components: unit.components }] : [];
+  });
+}
+
+function renderOlxPreview() {
+  unitSelect.innerHTML = activeManifest.sections.map((section) => `
+    <div class="unit-selection-group">
+      <label class="unit-choice"><input class="unit-choice-input" type="checkbox" data-section-id="${escapeHtml(section.id)}"><span>${escapeHtml(section.title)}</span></label>
+      ${section.subsections.map((subsection) => `<div class="subsection-group"><strong>${escapeHtml(subsection.title)}</strong>
+        ${subsection.units.map((unit) => `<label class="content-choice"><input class="lesson-choice-input" type="checkbox" data-section-id="${escapeHtml(section.id)}" data-subsection-id="${escapeHtml(subsection.id)}" value="${escapeHtml(unit.id)}" disabled><span>${escapeHtml(unit.title)}${unit.components.length ? ` <small>(${unit.components.map((component) => escapeHtml(component.title)).join(', ')})</small>` : ''}</span></label>`).join('')}
+      </div>`).join('')}
+    </div>
+  `).join('');
+  unitSelect.onchange = (event) => {
+    const sectionInput = event.target.closest('.unit-choice-input');
+    if (sectionInput) {
+      unitSelect.querySelectorAll(`.lesson-choice-input[data-section-id="${sectionInput.dataset.sectionId}"]`).forEach((input) => {
+        input.disabled = !sectionInput.checked;
+        input.checked = sectionInput.checked;
+      });
+    } else {
+      const lessonInput = event.target.closest('.lesson-choice-input');
+      if (lessonInput) {
+        const parent = unitSelect.querySelector(`.unit-choice-input[data-section-id="${lessonInput.dataset.sectionId}"]`);
+        const children = [...unitSelect.querySelectorAll(`.lesson-choice-input[data-section-id="${lessonInput.dataset.sectionId}"]`)];
+        parent.checked = children.some((input) => input.checked);
+        parent.indeterminate = children.some((input) => input.checked) && children.some((input) => !input.checked);
+      }
+    }
+    updateScopePreview();
+  };
+  document.querySelector('#toggle-subsections').onclick = () => {
+    const boxes = [...unitSelect.querySelectorAll('.lesson-choice-input:not(:disabled)')];
+    const selectAll = boxes.some((input) => !input.checked);
+    boxes.forEach((input) => { input.checked = selectAll; });
+    unitSelect.querySelectorAll('.unit-choice-input').forEach((parent) => {
+      const children = [...unitSelect.querySelectorAll(`.lesson-choice-input[data-section-id="${parent.dataset.sectionId}"]`)];
+      parent.checked = children.some((input) => input.checked);
+      parent.indeterminate = children.some((input) => input.checked) && children.some((input) => !input.checked);
+    });
+    updateScopePreview();
+  };
+  updateScopePreview();
+  document.querySelector('#course-title').textContent = `${activeManifest.title} · Choose units, then content parts`;
+  olxPreview.hidden = false;
+}
+
+function updateScopePreview() {
+  const selected = selectedScopeUnits();
+  const enabledContent = [...unitSelect.querySelectorAll('.lesson-choice-input:not(:disabled)')];
+  document.querySelector('#toggle-subsections').textContent = enabledContent.length && enabledContent.every((input) => input.checked)
+    ? 'Clear selected lesson subsections'
+    : 'Select all lesson subsections in chosen units';
+  document.querySelector('#toggle-subsections').disabled = enabledContent.length === 0;
+  scopeSummary.textContent = `${selected.length} video${selected.length === 1 ? '' : 's'} will be generated from ${selected.length} selected unit${selected.length === 1 ? '' : 's'}.`;
+  unitList.innerHTML = selected.map(({ section, subsection, unit, components }) => `<li><strong>${escapeHtml(section.title)} / ${escapeHtml(subsection.title)} / ${escapeHtml(unit.title)}</strong><ul>${components.map((component) => `<li>${escapeHtml(component.title)} · ${escapeHtml(component.kind)} (${component.characters} characters)</li>`).join('')}</ul></li>`).join('');
 }
 
 function renderQualityOptions(qualities, defaultQuality) {
@@ -237,7 +351,6 @@ form.addEventListener('submit', async (event) => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        title: title.value,
         prompt: prompt.value || null,
         quality: selectedQuality,
       }),
@@ -255,5 +368,81 @@ form.addEventListener('submit', async (event) => {
 
 document.querySelector('#retry-button').addEventListener('click', resetToForm);
 document.querySelector('#new-button').addEventListener('click', resetToForm);
+document.querySelector('#bundle-new-button').addEventListener('click', resetToForm);
+
+olxForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!olxFile.files?.length) return;
+  olxError.hidden = true;
+  olxPreview.hidden = true;
+  document.querySelector('#preview-button').disabled = true;
+  try {
+    const selectedFiles = [...olxFile.files];
+    const relevantFiles = selectedFiles.filter((file) => /(^|\/)(course\.xml|course\/[^/]+\.xml|chapter\/[^/]+\.xml|sequential\/[^/]+\.xml|vertical\/[^/]+\.xml|html\/[^/]+\.(xml|html)|problem\/[^/]+\.xml|video\/[^/]+\.xml|static\/[^/]+\.htm|static\/html5\/.*\/index\.html)$/i.test(file.webkitRelativePath));
+    const files = await Promise.all(relevantFiles.map(async (file) => ({
+      path: file.webkitRelativePath.split('/').slice(1).join('/'),
+      content: await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(',')[1]);
+        reader.onerror = () => reject(reader.error || new Error(`Could not read ${file.name}`));
+        reader.readAsDataURL(file);
+      }),
+    })));
+    const response = await fetch('/api/olx/preview-folder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ files }),
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.detail || 'Could not preview this OLX course.');
+    activeImport = body.import_id;
+    activeManifest = body.manifest;
+    renderOlxPreview();
+  } catch (error) {
+    olxError.textContent = error.message || 'Could not preview this OLX course.';
+    olxError.hidden = false;
+  } finally {
+    document.querySelector('#preview-button').disabled = false;
+  }
+});
+
+document.querySelector('#generate-course').addEventListener('click', async () => {
+  if (!activeImport) return;
+  const selections = selectedScopeUnits().map(({ section, subsection, unit, components }) => ({
+    section_id: section.id,
+    subsection_id: subsection.id,
+    unit_id: unit.id,
+    component_indices: components.map((component) => Number(component.id)),
+  }));
+  if (!selections.length) {
+    olxError.textContent = 'Check at least one section/unit and at least one content subsection inside it.';
+    olxError.hidden = false;
+    return;
+  }
+  const request = {
+    import_id: activeImport,
+    selections,
+    prompt: prompt.value || null,
+    quality: selectedQuality,
+  };
+  lockForm();
+  progressBar.style.width = '4%';
+  statusText.textContent = 'Preparing selected course videos…';
+  statusDetail.textContent = scopeSummary.textContent;
+  renderStageList('starting');
+  show(statusPanel);
+  startElapsed();
+  try {
+    const response = await fetch('/api/olx/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request) });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.detail || 'Could not start course generation.');
+    poll(body.job_id);
+  } catch (error) {
+    stopElapsed();
+    errorText.textContent = error.message || 'Could not start course generation.';
+    show(errorPanel);
+    unlockForm();
+  }
+});
 
 loadConfig();

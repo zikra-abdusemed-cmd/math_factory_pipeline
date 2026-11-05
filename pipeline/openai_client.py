@@ -63,24 +63,43 @@ def generate_json(prompt: str, system_instruction: str | None = None, temperatur
     return _parse_json_loose(response.output_text or "")
 
 
-def generate_video_package(title: str, extra_instructions: str | None = None) -> Any:
+def generate_video_package(
+    title: str,
+    extra_instructions: str | None = None,
+    source_content: str | None = None,
+    min_scenes: int | None = None,
+    max_scenes: int | None = None,
+    duration_guidance: str | None = None,
+    target_seconds_per_beat: float | None = None,
+) -> Any:
     """Generate narration, storyboard, and all scene sources in one model request."""
     from pipeline.scene_codegen import CODEGEN_SYSTEM_PROMPT
     from pipeline.script_gen import SCRIPT_SYSTEM_PROMPT
     from pipeline.storyboard_gen import STORYBOARD_SYSTEM_PROMPT
 
     words_per_second = 2.5
-    target_seconds = config.pipeline.target_seconds_per_beat
+    target_seconds = target_seconds_per_beat or config.pipeline.target_seconds_per_beat
+    scene_min = max(1, min_scenes if min_scenes is not None else 4)
+    scene_max = max(scene_min, max_scenes if max_scenes is not None else config.pipeline.max_scenes)
     min_words = int(target_seconds * words_per_second * 0.7)
     max_words = int(target_seconds * words_per_second * 1.3)
     script_rules = SCRIPT_SYSTEM_PROMPT.format(
         target_seconds=int(target_seconds), min_words=min_words, max_words=max_words
     )
     direction = f"\nAdditional creative direction: {extra_instructions.strip()}" if extra_instructions and extra_instructions.strip() else ""
-    prompt = f"""Create a complete math explainer video package in one response.
+    source = f"\nAUTHORITATIVE OPEN EDX COURSE CONTENT (this material defines the video subject and scope; teach it faithfully; do not invent, omit, or switch disciplines):\n{source_content.strip()}\n" if source_content and source_content.strip() else ""
+    subject_rule = (
+        "The imported Open edX content is the sole authority for the video's subject, scope, explanations, examples, and terminology. Base the narration and visuals on that content. Use headings only to identify which part of the course the content belongs to. Do not use the caller-provided title to choose or add subject matter. Derive a concise video title from the selected content. Use mathematics only where it is part of the supplied content; never turn a science lesson into a mathematics lesson.\n"
+        if source_content and source_content.strip() else ""
+    )
+    title_line = f"Video title: {title}\n" if not (source_content and source_content.strip()) else ""
+    prompt = f"""Create a complete educational explainer video package in one response.
 
-Title: {title}
-Produce 4 to {max(4, config.pipeline.max_scenes)} narration beats, each around {target_seconds} seconds.{direction}
+{title_line}
+Produce {scene_min} to {scene_max} narration beats, each around {target_seconds} seconds.{direction}
+{duration_guidance or ''}
+{source}
+{subject_rule}
 
 NARRATION RULES:
 {script_rules}
@@ -128,7 +147,7 @@ def generate_missing_video_scenes(
         for scene in existing_scenes
         if isinstance(scene, dict)
     ]
-    prompt = f"""Complete an incomplete math-video package by generating ONLY the missing Manim scenes.
+    prompt = f"""Complete an incomplete educational video package by generating ONLY the missing Manim scenes.
 
 Title: {title}
 Audience: {audience}

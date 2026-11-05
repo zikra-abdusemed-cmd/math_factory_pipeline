@@ -16,8 +16,7 @@ from dataclasses import dataclass
 import config
 from pipeline.openai_client import generate_json
 
-SCRIPT_SYSTEM_PROMPT = """You are an expert math educator and scriptwriter, \
-in the style of 3Blue1Brown / Numberphile. You write narration scripts meant \
+SCRIPT_SYSTEM_PROMPT = """You are an expert educator and scriptwriter. You write narration scripts meant \
 to be read aloud by a text-to-speech engine over a Manim animation.
 
 Rules:
@@ -28,11 +27,13 @@ Rules:
 - Build one clear idea per beat, in a logical teaching order: hook / motivation, \
 setup and definitions, the core idea worked through step by step, \
 a concrete example, and a memorable takeaway.
-- Be precise about math. Do not state anything mathematically incorrect.
-- Assume a curious high-school-to-early-college audience with no special background.
+- Be accurate to the supplied academic subject and source material. Do not \
+change the subject or turn a lesson into a different discipline. Use formulas \
+only when they help explain the supplied subject.
+- Match audience and prerequisites to the course level stated in the title or source material. For school courses, explain at that grade level.
 """
 
-SCRIPT_USER_PROMPT = """Write a narration script for a short math education video.
+SCRIPT_USER_PROMPT = """Write a narration script for a short educational video on the subject indicated by its title and source material.
 
 Video title: "{title}"
 

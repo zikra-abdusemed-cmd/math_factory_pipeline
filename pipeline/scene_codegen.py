@@ -29,8 +29,8 @@ from pipeline.math_rendering import ensure_math_renderer_available, tex_path_env
 import config
 
 CODEGEN_SYSTEM_PROMPT = """You are a senior Manim (Community Edition, v0.19+) \
-developer who writes clean, CORRECT, self-contained scenes for math \
-explainer videos, using the manim-voiceover plugin to sync narration audio \
+developer who writes clean, CORRECT, self-contained scenes for educational \
+explainer videos in the supplied academic subject, using the manim-voiceover plugin to sync narration audio \
 with animation.
 
 Hard requirements for every scene you write:
@@ -90,8 +90,10 @@ sphere, avoid drawing straight lines across its surface as if they were solid \
 edges; use great-circle arcs or latitude/longitude curves instead.
 - Use Text only for ordinary natural language. Prefer create_content(...) \
 from pipeline.math_rendering for any on-screen label whose content may mix \
-prose and math. Use MathTex / create_math only for pure equations. Never put \
-raw LaTeX, scripts (^ or _), or mathematical source inside Text.
+prose and mathematical notation. Use MathTex / create_math for equations only \
+when the supplied subject calls for them. Never put raw LaTeX, scripts (^ or _), \
+or mathematical source inside Text. Keep every scene focused on the supplied \
+subject and faithfully illustrate the supplied narration.
 - Use the pipeline's `create_math` for TeX; it installs the supported template \
 even if a scene tries Manim's `Tex` constructor.
 - `create_math` accepts one or more positional TeX strings, like MathTex; \

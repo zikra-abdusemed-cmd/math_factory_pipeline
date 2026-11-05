@@ -1,6 +1,6 @@
 # Math Video Pipeline
 
-Turn a title into a fully narrated math explainer video:
+Turn a title into a fully narrated math explainer video, or import an Open edX OLX course and generate videos for a selected course scope:
 
 ```
 title -> narration script -> Manim storyboard -> Manim scene code (per beat)
@@ -8,6 +8,15 @@ title -> narration script -> Manim storyboard -> Manim scene code (per beat)
       -> render each scene (audio + animation already synced/embedded)
       -> stitch into one final .mp4
 ```
+
+For an OLX import, select the unzipped course folder containing `course.xml`.
+The browser UI shows the course hierarchy: grade unit/chapter, subsection group
+(sequential), and lesson subsection/unit (vertical). Check a grade unit to show
+its lesson subsections, then check the specific lesson subsections to generate.
+Each checked lesson subsection produces one video from its full HTML/problem
+content. The result is a ZIP containing ordered videos in separate folders and
+`course_manifest.json`. HTML lesson pages are followed through their wrapper
+and iframe reference into `static/` where the course stores the full page text.
 
 OpenAI is used for **one text-generation request per video** (script,
 storyboard, and all Manim scene code together) with `gpt-5.6-terra`, and
@@ -53,8 +62,10 @@ tts_services/
   openai_tts_service.py         narration: OpenAI gpt-4o-mini-tts
   offline_silent_service.py     free, no-API dry run of the mechanics
 webapp/                         local FastAPI UI
+pipeline/olx.py                Open edX OLX archive parsing and course hierarchy
 generated/<title-slug>/         all output for one run (see below)
 generated/_voiceover_cache/     shared TTS wav + cache.json across runs
+generated/olx_courses/         completed course-scope video bundles
 ```
 
 After a run, `generated/<title-slug>/` contains:
@@ -238,6 +249,22 @@ an offline-voice run (see Usage below), then a real run.
 ```bash
 python main.py "The Pythagorean Theorem"
 ```
+
+Or start the local browser app and use **Build from Open edX OLX**:
+
+```bash
+uvicorn webapp.server:app --app-dir . --reload
+```
+
+Select the extracted Open edX OLX course folder containing `course.xml`. Review
+the course outline and component preview, check the section/unit you want, then
+check which content parts inside it to generate. For example, a unit can contain
+Introduction, Unit Overview, Key Vocabulary, or Main Content. Only checked
+units and checked inner content parts are included. Each checked content part
+creates its own video inside a section/subsection/unit/content folder in the ZIP
+and generated output, alongside the order/title manifest. Course generation
+is sequential and can take a while; if a unit fails, already completed videos
+are retained in a partial ZIP linked from the error response.
 
 Useful flags:
 

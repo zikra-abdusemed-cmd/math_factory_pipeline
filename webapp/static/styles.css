@@ -74,6 +74,44 @@ body {
   animation-delay: .05s;
 }
 
+.import-panel {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 30px;
+  padding: 22px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+.import-panel h2, .import-panel h3 { margin: 0; font-family: var(--display); }
+.import-panel > p { margin: 0; color: var(--muted); line-height: 1.45; }
+.import-panel form { display: grid; gap: 8px; }
+.import-panel input[type="file"], .import-panel select {
+  width: 100%; padding: 11px 12px; color: var(--ink); font: inherit;
+  border: 1px solid var(--line); border-radius: 9px; background: #fff;
+}
+.import-panel button { margin-top: 8px; }
+#olx-preview { display: grid; gap: 8px; padding-top: 14px; border-top: 1px solid var(--line); }
+.import-error { color: var(--error) !important; font-weight: 600; }
+.unit-list { max-height: 280px; overflow: auto; padding-left: 22px; color: var(--muted); font-size: .86rem; }
+.unit-list > li { margin: 10px 0; }
+.unit-list strong { color: var(--ink); }
+.unit-list ul { margin-top: 4px; }
+.import-panel details { margin: 6px 0; }
+.import-panel summary { cursor: pointer; font-weight: 600; }
+.section-options { display: grid; gap: 6px; max-height: 180px; overflow: auto; padding: 9px; background: #fff; border: 1px solid var(--line); border-radius: 9px; }
+.section-option { display: flex; align-items: center; gap: 9px; margin: 0; font-weight: 500; cursor: pointer; }
+.section-option input { width: auto; accent-color: var(--accent); }
+.subsection-group { display: grid; gap: 6px; padding: 4px 0 8px; border-bottom: 1px solid var(--line); }
+.subsection-group > strong { font-size: .82rem; color: var(--muted); }
+.subsection-toggle { padding: 8px 10px; font-size: .86rem; }
+.unit-selection-list { display: grid; gap: 14px; max-height: 520px; overflow: auto; }
+.unit-selection-group { display: grid; gap: 7px; padding: 12px; background: #fff; border: 1px solid var(--line); border-radius: 10px; }
+.unit-selection-group > strong { font-size: .9rem; }
+.unit-choice { display: flex; align-items: center; gap: 9px; margin: 0; font-weight: 600; cursor: pointer; }
+.unit-choice input, .content-choice input { width: auto; accent-color: var(--accent); }
+.content-choice { display: flex; align-items: center; gap: 9px; margin: 0 0 0 22px; font-weight: 450; cursor: pointer; }
+
 label, legend {
   margin-top: 14px;
   font-size: 0.86rem;

@@ -15,14 +15,36 @@
     <main class="shell">
       <header class="brand">
         <p class="brand-mark">Figure</p>
-        <p class="brand-tag">Narrated Manim explainers from a title.</p>
+        <p class="brand-tag">Narrated Manim explainers from a topic or Open edX course export.</p>
       </header>
+
+      <section class="import-panel" aria-labelledby="import-title">
+        <h2 id="import-title">Build from Open edX OLX</h2>
+        <p>Choose a grade unit, then select the lesson subsections to turn into videos.</p>
+        <form id="olx-form">
+          <label for="olx-file">Unzipped Open edX course folder</label>
+          <input id="olx-file" type="file" webkitdirectory directory multiple required>
+          <p class="hint">Choose the extracted OLX folder that contains course.xml.</p>
+          <button id="preview-button" type="submit" class="ghost">Preview course folder</button>
+        </form>
+        <p id="olx-error" class="import-error" hidden></p>
+        <div id="olx-preview" hidden>
+          <h3 id="course-title"></h3>
+          <label>Choose a unit, then its lesson subsections</label>
+          <p class="hint">Select a grade unit such as Unit 01, then check the lesson subsections to generate, such as Introduction, Unit Overview, Key Vocabulary, or Main Lesson Content. Each checked subsection becomes one video.</p>
+          <div id="unit-select" class="unit-selection-list"></div>
+          <button id="toggle-subsections" type="button" class="ghost subsection-toggle">Select all lesson subsections</button>
+          <p id="scope-summary" class="hint"></p>
+          <details>
+            <summary>Preview included content</summary>
+            <ol id="unit-list" class="unit-list"></ol>
+          </details>
+          <button id="generate-course" type="button">Generate selected course content</button>
+        </div>
+      </section>
 
       <form id="generate-form" class="compose" aria-labelledby="compose-title">
         <h1 id="compose-title" class="visually-hidden">Generate a math video</h1>
-
-        <label for="title">Title</label>
-        <input id="title" name="title" maxlength="160" required placeholder="e.g. Why does 0.999… equal 1?" autocomplete="off">
 
         <label for="prompt">Creative brief <span class="optional">optional</span></label>
         <textarea id="prompt" name="prompt" maxlength="2000" placeholder="Audience, metaphor, or anything you want covered…"></textarea>
@@ -55,6 +77,13 @@
           <a id="download-link" class="download" download>Download MP4</a>
           <button id="new-button" type="button" class="ghost">Make another</button>
         </div>
+      </section>
+
+      <section id="bundle-result" class="result" hidden>
+        <p class="success">Your course video bundle is ready.</p>
+        <p id="bundle-summary"></p>
+        <a id="bundle-download" class="download" download>Download course videos and manifest</a>
+        <button id="bundle-new-button" type="button" class="ghost">Start another job</button>
       </section>
 
       <section id="error-panel" class="error-box" hidden role="alert">

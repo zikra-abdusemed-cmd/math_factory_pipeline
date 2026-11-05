@@ -16,13 +16,14 @@ from pipeline.openai_client import generate_json
 from pipeline.script_gen import Script
 
 STORYBOARD_SYSTEM_PROMPT = """You are a Manim (Community Edition) storyboard \
-artist who plans math explainer visuals in the style of 3Blue1Brown.
+artist who plans clear educational visuals that match the supplied academic subject.
 
 For each narration beat you are given, design a visual plan that:
 - Uses only things Manim can actually draw: shapes (Circle, Square, Dot, \
-Line, Arrow, Polygon), MathTex/Tex equations, Axes/NumberPlane graphs, \
-Text labels, and simple transforms (Create, Transform, FadeIn/Out, \
-Write, animate.shift/scale/rotate).
+Line, Arrow, Polygon), equations when relevant, axes/graphs when relevant, \
+Text labels, diagrams, and simple transforms (Create, Transform, FadeIn/Out, \
+Write, animate.shift/scale/rotate). Choose visuals that teach the subject; \
+do not force equations or math graphs into other explanations.
 - Has 2-4 concrete visual "beats" (sub-steps) that a Manim scene can animate \
 in the same order the narration would naturally reveal them.
 - Never invents external images, icons, logos, or video/audio assets -- \
@@ -43,7 +44,7 @@ Return STRICT JSON with this exact shape:
       "class_name": "PascalCaseSceneClassName",
       "visual_summary": "one or two sentences describing the overall visual for this beat",
       "steps": [
-        "short imperative description of sub-step 1, e.g. 'Draw a unit circle centered at the origin'",
+        "short imperative description of a visual sub-step that supports the narration",
         "short imperative description of sub-step 2"
       ],
       "on_screen_text": ["any short labels/equations that should appear as text/MathTex, or [] if none"]

@@ -214,6 +214,18 @@ class OLXReader:
                         text = html_to_text(_xblock_markup(child))
                 else:
                     text = html_to_text(_xblock_markup(child))
+                # Some OLX exports store a rich interactive lesson in a
+                # sibling static HTML page and leave only an iframe wrapper
+                # in the component file. Resolve that iframe for both .html
+                # and .xml component variants.
+                if filename and text:
+                    iframe_parser = _IframeSourceParser()
+                    iframe_parser.feed(text)
+                    full_page = self._static_iframe_page(base, iframe_parser.sources)
+                    if full_page and full_page.stat().st_size <= MAX_COMPONENT_CHARS * 4:
+                        embedded_text = html_to_text(full_page.read_text(encoding="utf-8", errors="replace"))
+                        if embedded_text:
+                            text = embedded_text
             elif tag == "video":
                 text = " ".join(filter(None, [child.get("youtube_id_1_0"), child.get("youtube_id_0_0"), child.get("url_name")]))
                 text = f"Video reference: {text}" if text else "Video component (transcript may be in an associated asset)."
@@ -440,7 +452,10 @@ def selected_unit_components(course: Course, selections: list[dict[str, Any]]) -
         raw_indices = selection.get("component_indices")
         if not isinstance(raw_indices, list) or not raw_indices:
             raise ValueError(f"Select at least one content subsection in unit {unit.title!r}.")
-        indices = sorted(set(int(index) for index in raw_indices))
+        try:
+            indices = sorted(set(int(index) for index in raw_indices))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Selected content indices must be integers in unit {unit.title!r}.") from exc
         if any(index < 0 or index >= len(unit.components) for index in indices):
             raise ValueError(f"A selected content subsection does not exist in unit {unit.title!r}.")
         result.append(UnitSelection(section.title, subsection.title, unit, indices))

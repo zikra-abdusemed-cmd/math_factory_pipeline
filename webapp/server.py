@@ -288,17 +288,16 @@ def _run_course_job(job_id: str, course: Course, units: list[UnitSelection], out
             job.status = "error"
             job.stage = "error"
             job.error = str(exc) or exc.__class__.__name__
-            if videos:
-                manifest_path = output_dir / "course_manifest.json"
-                manifest_path.write_text(json.dumps({"course": course.title, "units": table, "failed": job.detail.get("unit_title")}, ensure_ascii=False, indent=2), encoding="utf-8")
-                archive = output_dir / "partial-course-videos.zip"
-                with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
-                    bundle.write(manifest_path, manifest_path.name)
-                    for path in videos:
-                        bundle.write(path, path.relative_to(output_dir).as_posix())
-                job.video_path = archive
-                job.download_name = archive.name
-                job.detail = {"title": course.title, "completed_units": table, "unit_total": len(units)}
+            manifest_path = output_dir / "course_manifest.json"
+            manifest_path.write_text(json.dumps({"course": course.title, "units": table, "failed": job.detail.get("unit_title")}, ensure_ascii=False, indent=2), encoding="utf-8")
+            archive = output_dir / "partial-course-videos.zip"
+            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+                bundle.write(manifest_path, manifest_path.name)
+                for path in videos:
+                    bundle.write(path, path.relative_to(output_dir).as_posix())
+            job.video_path = archive
+            job.download_name = archive.name
+            job.detail = {"title": course.title, "completed_units": table, "unit_total": len(units)}
 
 
 @app.get("/api/jobs/{job_id}")

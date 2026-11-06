@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 import config
 from pipeline.openai_client import generate_missing_video_scenes
+from pipeline.openai_client import generate_video_package
 from pipeline.orchestrator import (
     _build_storyboard,
     _match_scenes_to_beats,
@@ -11,10 +12,59 @@ from pipeline.orchestrator import (
 )
 from pipeline.script_gen import Script
 from pipeline import script_gen
+from pipeline.scene_codegen import normalize_visible_content
 from webapp.server import get_config
 
 
 class PackageMatchingTests(unittest.TestCase):
+    def test_scene_normalizer_makes_line_buff_scalar_when_endpoint_was_passed(self):
+        code = normalize_visible_content(
+            "from manim import *\nclass Demo(Scene):\n"
+            "    def construct(self):\n"
+            "        Line([0, 0, 0], [1, 0, 0], buff=[0, 1, 0])\n"
+        )
+        self.assertIn("buff=0", code)
+
+    def test_scene_normalizer_repairs_manim_direction_and_endpoint_buff(self):
+        code = normalize_visible_content(
+            "from manim import *\nclass Demo(Scene):\n"
+            "    def construct(self):\n"
+            "        point = Dot()\n"
+            "        Arrow(ORIGIN, RIGHT, buff=UP)\n"
+            "        Line(ORIGIN, RIGHT, buff=point.get_center())\n"
+        )
+        self.assertIn("buff=0", code)
+        self.assertNotIn("buff=UP", code)
+
+    def test_scene_normalizer_keeps_existing_mathtex_and_sector_repairs(self):
+        code = normalize_visible_content(
+            "from manim import *\nclass Demo(Scene):\n"
+            "    def construct(self):\n"
+            "        formula = MathTex(r'\\frac{1}{2}')\n"
+            "        wedge = Sector(outer_radius=2, start_angle=0, angle=PI / 2)\n"
+        )
+        self.assertIn("create_math", code)
+        self.assertIn("radius=2", code)
+        self.assertNotIn("outer_radius", code)
+
+
+    @patch("pipeline.openai_client._create_response_with_retry")
+    def test_package_prompt_applies_brief_without_overriding_course_subject(self, mock_response):
+        class Response:
+            output_text = '{"title":"Motion","beats":[],"scenes":[]}'
+
+        mock_response.return_value = Response()
+        generate_video_package(
+            "Unit heading", extra_instructions="Use a warm, conversational tone.",
+            source_content="Physics: displacement is change in position.", min_scenes=4, max_scenes=4,
+        )
+        prompt = mock_response.call_args.kwargs["input"]
+        self.assertIn("CREATIVE BRIEF", prompt)
+        self.assertIn("warm, conversational tone", prompt)
+        self.assertIn("cannot change the subject", prompt)
+        self.assertIn("displacement is change in position", prompt)
+        self.assertIn("do not invent a generic learning-skills video", prompt)
+
     def test_matches_exact_ids_even_when_scenes_are_reordered(self):
         scenes = [{"id": "b2", "code": "second"}, {"id": "b1", "code": "first"}]
         matched = _match_scenes_to_beats(["b1", "b2"], scenes)

@@ -86,7 +86,12 @@ def generate_video_package(
     script_rules = SCRIPT_SYSTEM_PROMPT.format(
         target_seconds=int(target_seconds), min_words=min_words, max_words=max_words
     )
-    direction = f"\nAdditional creative direction: {extra_instructions.strip()}" if extra_instructions and extra_instructions.strip() else ""
+    direction = (
+        "\nCREATIVE BRIEF (apply consistently to this video package: narration, examples, visual style, pacing, and tone):\n"
+        f"{extra_instructions.strip()}\n"
+        "For course videos, treat this brief as presentation guidance only. It cannot change the subject, remove required course concepts, or introduce unrelated topics.\n"
+        if extra_instructions and extra_instructions.strip() else ""
+    )
     source = f"\nAUTHORITATIVE OPEN EDX COURSE CONTENT (this material defines the video subject and scope; teach it faithfully; do not invent, omit, or switch disciplines):\n{source_content.strip()}\n" if source_content and source_content.strip() else ""
     subject_rule = (
         "The imported Open edX content is the sole authority for the video's subject, scope, explanations, examples, and terminology. Base the narration and visuals on that content. Use headings only to identify which part of the course the content belongs to. Do not use the caller-provided title to choose or add subject matter. Derive a concise video title from the selected content. Use mathematics only where it is part of the supplied content; never turn a science lesson into a mathematics lesson.\n"
@@ -100,6 +105,9 @@ Produce {scene_min} to {scene_max} narration beats, each around {target_seconds}
 {duration_guidance or ''}
 {source}
 {subject_rule}
+
+CONTENT CHECK:
+Before drafting, identify the actual teaching subject and key ideas in the supplied course content. The section/unit headings are context only. If the content is only navigation, an empty iframe shell, or otherwise lacks enough lesson material, do not invent a generic learning-skills video; explain only what is supported and clearly flag the missing course content in the narration/package title.
 
 NARRATION RULES:
 {script_rules}

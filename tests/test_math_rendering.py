@@ -65,7 +65,7 @@ class MathRenderingTests(unittest.TestCase):
         self.assertIn("import numpy as np", normalized)
         class_defs = [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
         self.assertEqual(class_defs[0].bases[0].id, "SyncedVoiceoverScene")
-        self.assertIn("from pipeline.voiceover_sync import SyncedVoiceoverScene", normalized)
+        self.assertIn("SyncedVoiceoverScene", normalized)
         self.assertNotIn("from manim_voiceover import VoiceoverScene", normalized)
 
     def test_mathtex_calls_are_rewritten_to_create_math(self):

@@ -135,6 +135,18 @@ sequences such as `\\f` and `\\t` before MathTex receives them.
 - Keep every on-screen element within the default frame (do not manually \
 change camera/frame size). Clean up each visual beat with FadeOut before \
 introducing an unrelated one so the screen doesn't get cluttered.
+- LAYOUT AND READABILITY: Treat text and diagrams as separate objects that \
+must not overlap. Reserve the upper band for a short title and keep the main \
+diagram in the central/lower area. Put labels beside or outside the object they \
+describe; never place text on top of lines, arrows, plotted curves, vertices, \
+or other labels. Leave visible gaps between diagram parts. For crowded layouts, \
+simplify the drawing or split it into sequential animation steps instead of \
+shrinking text until it is unreadable. Arrange repeated items with VGroup.arrange \
+and position labels with next_to(..., buff=...). Before returning code, review \
+the final positions of every title, label, equation, and diagram component for \
+collisions and frame-edge clipping. If elements can move during the beat, keep \
+labels attached to their objects with a grouped transform or reposition them \
+after the movement.
 - No print(), no input(), no network calls, no file I/O other than what \
 manim/manim-voiceover already do internally.
 - Output ONLY the Python source code. No markdown fences, no commentary, \
@@ -169,8 +181,10 @@ requirements from the system prompt (same class name, same narration text \
 reproduced exactly in one self.voiceover block, remaining-duration sync so \
 animations never overrun audio, only Manim's own primitives). Do NOT work \
 around MathTex failures by putting LaTeX into Text(); fix the TeX expression \
-instead. Output ONLY the corrected Python source code, no markdown fences, \
-no commentary.
+instead. Also review the composition for text/diagram overlap, collisions \
+between labels, and content outside the frame; fix those layout problems as \
+well, even if they were not the render error. Output ONLY the corrected Python \
+source code, no markdown fences, no commentary.
 """
 
 
@@ -323,7 +337,9 @@ class _UniversalTextTransformer(ast.NodeTransformer):
                 for keyword in node.keywords:
                     if keyword.arg == "outer_radius":
                         keyword.arg = "radius"
-        if func_name == "get_riemann_rectangles":
+        if func_name == "get_riemann_rectangles" or (
+            isinstance(node.func, ast.Attribute) and node.func.attr == "get_riemann_rectangles"
+        ):
             # Manim Community Edition accepts `color`, not `colors`.
             for keyword in node.keywords:
                 if keyword.arg == "colors":
@@ -401,6 +417,30 @@ class _UniversalTextTransformer(ast.NodeTransformer):
             first_line = node.func.value
             node.func = ast.Name(id="pipeline_line_intersection", ctx=ast.Load())
             node.args.insert(0, first_line)
+        if func_name in {"Line", "Arrow", "DoubleArrow", "DashedLine"}:
+            for keyword in node.keywords:
+                if keyword.arg != "buff":
+                    continue
+                value = keyword.value
+                # buff is a scalar distance. Lists, tuples, NumPy vectors,
+                # Manim directions, and mobject endpoint getters are all
+                # invalid here and trigger ambiguous-array comparisons.
+                is_vector = isinstance(value, (ast.List, ast.Tuple, ast.Dict, ast.Set))
+                is_vector = is_vector or (
+                    isinstance(value, ast.Name)
+                    and (value.id.isupper() or value.id in self.mobject_names)
+                )
+                is_vector = is_vector or (
+                    isinstance(value, ast.BinOp)
+                    and any(isinstance(part, ast.Name) and part.id.isupper() for part in ast.walk(value))
+                )
+                is_vector = is_vector or (
+                    isinstance(value, ast.Call)
+                    and isinstance(value.func, ast.Attribute)
+                    and value.func.attr in {"get_center", "get_start", "get_end", "get_left", "get_right", "get_top", "get_bottom"}
+                )
+                if is_vector:
+                    keyword.value = ast.Constant(value=0)
         return node
 
     def visit_Name(self, node: ast.Name) -> ast.AST:

@@ -273,7 +273,13 @@ class OLXReader:
             for seq_ref in _children(chapter, "sequential"):
                 seq_id = seq_ref.get("url_name") or f"subsection-{len(section.subsections)+1}"
                 sequential = self._xml(self._path(self.root, "sequential", seq_id)) if seq_ref.get("url_name") else seq_ref
-                subsection = Subsection(seq_id, self._title(sequential, "Untitled subsection"), sequential.get("graded", "false").lower() == "true")
+                subsection_title = self._title(sequential, "Untitled subsection")
+                # Interactive tool pages are activities, not source material
+                # for narrated explainer videos. Drop the whole subsection so
+                # it is not offered by either course-scope picker.
+                if "interactive tool" in subsection_title.casefold():
+                    continue
+                subsection = Subsection(seq_id, subsection_title, sequential.get("graded", "false").lower() == "true")
                 vertical_nodes = _children(sequential, "vertical")
                 if not vertical_nodes:
                     vertical_nodes = [sequential]
@@ -283,6 +289,11 @@ class OLXReader:
                     component_root = vertical
                     # Components may be nested in-line in OLX or referenced from component folders.
                     comps = self._contents(component_root, "unit", unit_id, self.root)
+                    comps = [
+                        component for component in comps
+                        if component.kind.casefold() != "html5"
+                        and not component.title.casefold().startswith(("tool ", "tool-", "tool_", "interactive tool"))
+                    ]
                     if comps:
                         unit_chars = sum(len(component.text) for component in comps)
                         if unit_chars > MAX_UNIT_CHARS:
